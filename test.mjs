@@ -14,6 +14,7 @@ import {
   loadInworldApiKey,
   snapSpeakingRate,
   speakingRateOf,
+  speechEnabledOf,
   synthesize,
   visibleText,
 } from './plugin.mjs'
@@ -104,6 +105,9 @@ function mountPlugin(options = {}) {
     api,
     emit(payload) {
       for (const handler of handlers.get('agent/assistant-stream') ?? []) handler(payload)
+    },
+    emitEvent(name, ...args) {
+      for (const handler of handlers.get(name) ?? []) handler(...args)
     },
   }
 }
@@ -222,6 +226,44 @@ test('snaps speaking rate to tenths between 0.8 and 1.5', async () => {
   releaseFirst()
   await mounted.api.whenIdle()
   assert.deepEqual(seen, [1, 1.4])
+})
+
+test('turning speech off stops playback and drops later sentences', async () => {
+  assert.equal(speechEnabledOf(undefined), true)
+  assert.equal(Config({}).enabled.get(), true)
+  assert.equal(Config({ enabled: false }).enabled.get(), false)
+
+  let enabled = true
+  const synthesized = []
+  let killed = false
+  const mounted = mountPlugin({
+    config: {
+      enabled: { get: () => enabled },
+      speakingRate: { get: () => 1 },
+    },
+    getApiKey: () => 'test-key',
+    synthesizeAudio: async text => {
+      synthesized.push(text)
+      return Buffer.from(text)
+    },
+    playAudio: (_audio, controls) => new Promise(resolve => {
+      controls.bindStop(() => {
+        killed = true
+        resolve()
+      })
+    }),
+  })
+  const sentence = `${repeat('甲', 21)}。`
+  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: sentence } } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(synthesized, [sentence])
+  enabled = false
+  mounted.emitEvent('loader/volatile-update', [['enabled']])
+  assert.equal(killed, true)
+  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${repeat('乙', 21)}。` } } })
+  mounted.emit({ frame: { type: 'end' } })
+  await mounted.api.whenIdle()
+  assert.deepEqual(synthesized, [sentence])
 })
 
 test('sends the Shorekeeper voice and normal speaking rate to Inworld', async () => {
@@ -353,6 +395,7 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   const client = readFileSync(new URL('./packages/shorekeeper-tts/client.js', import.meta.url), 'utf8')
   assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
   assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
-  assert.equal(client.includes('shorekeeper-speaking-rate-v2'), true)
+  assert.equal(client.includes('shorekeeper-speaking-rate-v3'), true)
   assert.equal(client.includes('语速 0.8x–1.5x'), true)
+  assert.equal(client.includes('关闭播报'), true)
 })
