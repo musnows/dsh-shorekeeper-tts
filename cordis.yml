@@ -1,0 +1,3 @@
+- insert:
+    - id: shorekeeper-tts
+      name: './plugin.mjs'
