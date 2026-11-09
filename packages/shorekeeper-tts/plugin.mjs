@@ -20,6 +20,7 @@ const RATE_STEP = 0.1
 
 export const Config = Schema.object({
   speakingRate: Schema.number().min(RATE_MIN).max(RATE_MAX).step(RATE_STEP).default(1).volatile(),
+  enabled: Schema.boolean().default(true).volatile(),
 })
 
 export function snapSpeakingRate(value) {
@@ -36,6 +37,12 @@ export function speakingRateOf(config) {
   const read = config?.speakingRate?.get
   if (typeof read !== 'function') return 1
   return snapSpeakingRate(read.call(config.speakingRate))
+}
+
+export function speechEnabledOf(config) {
+  const read = config?.enabled?.get
+  if (typeof read !== 'function') return true
+  return read.call(config.enabled) !== false
 }
 
 export function visibleText(content) {
@@ -372,6 +379,7 @@ export function createShorekeeperTtsPlugin({
     })
 
     const enqueueAll = sentences => {
+      if (!speechEnabledOf(config)) return
       for (const sentence of sentences) speaker.enqueue(sentence)
     }
 
@@ -380,9 +388,17 @@ export function createShorekeeperTtsPlugin({
       buffer.clear()
     }
 
+    ctx.on?.('loader/volatile-update', () => {
+      if (!speechEnabledOf(config)) stop()
+    })
+
     ctx.on('agent/assistant-stream', (payload, second) => {
       const frame = frameOf(payload, second)
       if (!frame || typeof frame !== 'object') return
+      if (!speechEnabledOf(config)) {
+        buffer.clear()
+        return
+      }
       if (frame.type === 'start') {
         buffer.clear()
         return

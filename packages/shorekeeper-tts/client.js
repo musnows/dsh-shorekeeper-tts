@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const RATE_MAX = 1.5
     const RATE_STEP = 0.1
     const ENTRY_ID = '守岸人语音'
-    const STYLE_ID = 'shorekeeper-speaking-rate-v2'
+    const STYLE_ID = 'shorekeeper-speaking-rate-v3'
 
     function snapSpeakingRate(value) {
       const number = typeof value === 'number' ? value : Number(value)
@@ -35,18 +35,34 @@ window.__ModuleLoader__.load({
         '.shorekeeper-rate::-moz-range-track{height:2px;border:0;border-radius:1px;background:linear-gradient(to right,currentColor 0,currentColor var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) 100%);}',
         '.shorekeeper-rate::-moz-range-thumb{width:8px;height:8px;border:0;border-radius:50%;background:currentColor;}',
         '.shorekeeper-rate-pop{position:fixed;z-index:80;box-sizing:border-box;padding:10px 12px;border-radius:8px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-tertiary);}',
+        '.shorekeeper-rate-actions{display:flex;align-items:center;gap:12px;}',
+        '.shorekeeper-rate-stop{appearance:none;-webkit-appearance:none;background:transparent;border:0;box-shadow:none;padding:0;margin:0;font-family:inherit;font-weight:inherit;font-size:var(--dsh-content-font-size-secondary);line-height:inherit;color:var(--dsw-alias-label-tertiary);cursor:pointer;white-space:nowrap;}',
+        '.shorekeeper-rate-stop:hover,.shorekeeper-rate-stop:focus,.shorekeeper-rate-stop:active{background:transparent;border:0;box-shadow:none;outline:none;}',
         '.shorekeeper-rate-config{display:flex;flex-direction:column;align-items:flex-start;gap:8px;color:var(--dsw-alias-label-tertiary);font-size:var(--dsh-content-font-size-secondary);}',
         '.shorekeeper-rate-summary,.shorekeeper-rate-error{font-size:var(--dsh-content-font-size-secondary);color:var(--dsw-alias-label-tertiary);}',
       ].join('')
       document.head.appendChild(style)
     }
 
+    function snapshotOf(form) {
+      if (!form) return null
+      return typeof form.getSnapshot === 'function' ? form.getSnapshot() : form
+    }
+
     function rateOf(form) {
-      if (!form) return 1
-      const snapshot = typeof form.getSnapshot === 'function' ? form.getSnapshot() : form
+      const snapshot = snapshotOf(form)
+      if (!snapshot) return 1
       const raw = snapshot?.value?.speakingRate ?? snapshot?.speakingRate
       if (raw == null) return 1
       return snapSpeakingRate(raw)
+    }
+
+    function enabledOf(form) {
+      const snapshot = snapshotOf(form)
+      if (!snapshot) return true
+      const raw = snapshot?.value?.enabled ?? snapshot?.enabled
+      if (raw == null) return true
+      return raw !== false
     }
 
     function subscribeForm(form, listener) {
@@ -104,6 +120,38 @@ window.__ModuleLoader__.load({
       return { shown: draft ?? stored, failed, commit }
     }
 
+    function useSpeechEnabled(form) {
+      const subscribe = React.useCallback(listener => subscribeForm(form, listener), [form])
+      const getSnapshot = React.useCallback(() => enabledOf(form), [form])
+      const stored = React.useSyncExternalStore(subscribe, getSnapshot, () => true)
+      const draftState = React.useState(null)
+      const draft = draftState[0]
+      const setDraft = draftState[1]
+      const failedState = React.useState(false)
+      const failed = failedState[0]
+      const setFailed = failedState[1]
+      React.useEffect(() => {
+        if (draft != null && stored === draft) setDraft(null)
+      }, [stored, draft])
+
+      async function commit(next) {
+        setDraft(next)
+        setFailed(false)
+        if (!form || typeof form.set !== 'function') {
+          setFailed(true)
+          return
+        }
+        try {
+          const accepted = await form.set('enabled', next)
+          if (accepted === false) setFailed(true)
+        } catch {
+          setFailed(true)
+        }
+      }
+
+      return { shown: draft ?? stored, failed, commit }
+    }
+
     function RateSlider({ value, onChange }) {
       const fill = `${((value - RATE_MIN) / (RATE_MAX - RATE_MIN)) * 100}%`
       return React.createElement('input', {
@@ -119,9 +167,31 @@ window.__ModuleLoader__.load({
       })
     }
 
+    function SpeechButton({ speech }) {
+      return React.createElement('button', {
+        type: 'button',
+        className: 'shorekeeper-rate-stop',
+        'aria-pressed': !speech.shown,
+        onClick() { speech.commit(!speech.shown) },
+      }, speech.shown ? '关闭播报' : '打开播报')
+    }
+
+    function RateBody({ rate, speech }) {
+      return React.createElement(React.Fragment, null,
+        React.createElement('div', { className: 'shorekeeper-rate-actions' },
+          React.createElement(RateSlider, { value: rate.shown, onChange: rate.commit }),
+          React.createElement(SpeechButton, { speech }),
+        ),
+        rate.failed || speech.failed
+          ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存')
+          : null,
+      )
+    }
+
     function DockRate({ forms }) {
       const form = useEntryForm(forms)
       const rate = useSpeakingRate(form)
+      const speech = useSpeechEnabled(form)
       const openState = React.useState(false)
       const open = openState[0]
       const setOpen = openState[1]
@@ -170,7 +240,7 @@ window.__ModuleLoader__.load({
           document.removeEventListener('keydown', onKey)
           document.removeEventListener('pointerdown', onPointer)
         }
-      }, [open, rate.failed, updatePlace])
+      }, [open, rate.failed, speech.failed, updatePlace])
 
       const label = React.createElement('button', {
         ref: labelRef,
@@ -178,7 +248,7 @@ window.__ModuleLoader__.load({
         className: 'shorekeeper-rate-label',
         'aria-expanded': open,
         onClick() { setOpen(current => !current) },
-      }, `语速 ${rate.shown.toFixed(1)}x`)
+      }, speech.shown ? `语速 ${rate.shown.toFixed(1)}x` : '语音已关')
 
       const pop = open
         ? ReactDOM.createPortal(React.createElement('div', {
@@ -186,8 +256,7 @@ window.__ModuleLoader__.load({
           className: 'shorekeeper-rate-pop',
           style: { top: `${place.top}px`, left: `${place.left}px` },
         },
-        React.createElement(RateSlider, { value: rate.shown, onChange: rate.commit }),
-        rate.failed ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存') : null,
+        React.createElement(RateBody, { rate, speech }),
         ), document.body)
         : null
 
@@ -197,10 +266,10 @@ window.__ModuleLoader__.load({
     function ConfigRate({ forms }) {
       const form = useEntryForm(forms)
       const rate = useSpeakingRate(form)
+      const speech = useSpeechEnabled(form)
       return React.createElement('div', { className: 'shorekeeper-rate-config' },
         React.createElement('div', { className: 'shorekeeper-rate-summary' }, '语速 0.8x–1.5x'),
-        React.createElement(RateSlider, { value: rate.shown, onChange: rate.commit }),
-        rate.failed ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存') : null,
+        React.createElement(RateBody, { rate, speech }),
       )
     }
 
