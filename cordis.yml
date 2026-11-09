@@ -1,3 +1,11 @@
+# 关掉 Harness 自带的编程助手开场。这一行会整份替换 system-prompt 的 config。
+- id: system-prompt
+  config:
+    includeHarnessIdentity: false
+    personaPrefix: ''
+
 - insert:
     - id: shorekeeper-tts
       name: './plugin.mjs'
+    - id: shorekeeper-persona
+      name: './persona.mjs'

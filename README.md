@@ -1,71 +1,81 @@
-# DSH 守岸人语音播报
+# DSH 守岸人
 
-这是一个 DeepSeek Harness（DSH）插件。每次 AI 正常完成一轮回复后，插件会用 Inworld 的守岸人音色朗读该轮最后一条回复。
+给 DeepSeek Harness（`dsh` `0.2.2-rc.1`）加两个本地插件：
 
-## 准备
+- **守岸人模拟**：插件一加载就进入守岸人人设，不需要再输入进入指令。
+- **守岸人语音**：回复往外流的时候，只把屏幕上的正文送给 Inworld，用守岸人音色朗读。推理和工具参数不读。
 
-- macOS：音频通过运行 DSH 的 Mac 上的 `afplay` 播放。
-- Node.js 24.9 或更高版本，以及 `tmux`。
-- 一个可用于生成语音的 Inworld API key。它与 DSH 使用的 DeepSeek 模型 API key 是两个独立的 key。
-- 能访问本私有仓库的 GitHub 账号和 Git SSH 配置。
+人设材料来自 [SHOREKEEPER-AGENT](https://github.com/ArayaTouka1/SHOREKEEPER-AGENT)，没有整本照搬。文件名里带「越狱」的材料不会被读入。`{{char}}`、`{{user}}`、`{char}`、`{user}` 原样进入提示词，运行时不替换。
 
-## 安装
+Inworld key 和 DeepSeek key 只放在进程环境或本机 `~/.dsh/` 下，不写进仓库。
 
-在终端克隆仓库并进入目录：
+## 网页
 
-```sh
-git clone git@github.com:musnows/dsh-shorekeeper-tts.git
-cd dsh-shorekeeper-tts
-```
-
-插件无需安装额外的 npm 依赖。下面的启动命令会通过 npm 获取指定版本的官方 DSH。
-
-## 启动
-
-以下命令适用于 macOS 默认的 zsh。先在仓库目录里运行：
+在仓库根目录启动。要走官方 npm 源，镜像源上可能没有 `@deepseek-ai/cordis-plugin-timer@1.2.0`：
 
 ```sh
-read -rs 'INWORLD_API_KEY?Inworld API key: '
-printf '\n'
-export INWORLD_API_KEY
-tmux new-session -s dsh-shorekeeper -e INWORLD_API_KEY="$INWORLD_API_KEY" -e DSH_PLUGIN_DIR="$PWD"
+npx --yes --registry https://registry.npmjs.org --package @deepseek-ai/dsh@0.2.2-rc.1 \
+  dsh web --patch "$PWD/cordis.yml" --port 18080 --no-open
 ```
 
-输入 Inworld API key 时终端不会显示内容。`tmux` 会打开一个新会话；在该会话中继续运行：
+`cordis.yml` 会关掉 Harness 自带的编程助手开场（`includeHarnessIdentity: false`，`personaPrefix` 为空），并插入 `./plugin.mjs` 和 `./persona.mjs`。这两个文件再导出包里的实现。
+
+可以用 tmux 保住进程，例如会话名 `dsh-shorekeeper`。重启会换掉地址里的 token，以终端里打印的地址为准。
+
+## 桌面客户端
+
+应用是 `/Applications/DeepSeek Harness.app`。桌面 profile 由 Electron 独占，不能用 `dsh --profile desktop` 从命令行改。配置在：
+
+`~/.dsh/profiles/desktop/cordis.patch.yml`
+
+把系统提示词的 Harness 身份关掉，并插入两个中文 id。中文 id 和语言包里的 `meta.title` 一致，设置页卡片才不会露出 `file:///` 或英文包名：
+
+```yaml
+- id: system-prompt
+  config:
+    includeHarnessIdentity: false
+    personaPrefix: ''
+
+- insert:
+    - id: 守岸人语音
+      name: '@dsh-local/shorekeeper-tts'
+    - id: 守岸人模拟
+      name: '@dsh-local/shorekeeper-persona'
+```
+
+依赖写在 `~/.dsh/profiles/desktop/package.json`，用 `file:` 指到本仓库的两个包。pnpm 会把包复制进自己的内容寻址仓库，改源码不会自动进到已经启动的客户端。改完人设或语音后，在桌面 profile 目录里对改过的那个包执行 `pnpm remove` 再 `pnpm add file:...`，然后重启 DeepSeek Harness。不要在 git 仓库根目录执行 `pnpm add`。
 
 ```sh
-npx --yes --package @deepseek-ai/dsh@0.2.2-rc.1 dsh web --patch "$DSH_PLUGIN_DIR/cordis.yml" --port 18080
+cd ~/.dsh/profiles/desktop
+pnpm remove @dsh-local/shorekeeper-tts
+pnpm add "file:/绝对路径/dsh-shorekeeper-tts/packages/shorekeeper-tts"
+pnpm remove @dsh-local/shorekeeper-persona
+pnpm add "file:/绝对路径/dsh-shorekeeper-tts/packages/shorekeeper-persona"
 ```
 
-如果 `18080` 已被占用，请把它替换为其他高于 10000 的空闲端口。首次运行可能需要下载 DSH，请等待启动完成。终端显示的本机地址包含访问令牌，在这台 Mac 的浏览器中打开该地址。
+Inworld key 给 Dock 启动的客户端用：`~/.dsh/.env` 里的 `INWORLD_API_KEY`，模式 `600`。值如果以 `==` 结尾，必须加引号。插件先读进程环境，再读这个文件。DeepSeek key 在 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`。
 
-如果提示 `dsh-shorekeeper` 会话已存在，可以运行 `tmux attach -t dsh-shorekeeper` 回到已有会话。保持 DSH 运行时，可按 `Ctrl-b`，松开后按 `d` 离开 tmux；之后使用同一条 `tmux attach` 命令返回。
+## 语音
 
-## 使用
+切分点只有中文句号「。」和代码块外面的换行。去掉空白后不超过 20 个字时不送去合成；超过之后，下一个句号或换行才送出。这一轮正文结束时，剩下的字仍会读完。Markdown 围栏里的内容不读。
 
-1. 首次进入 DSH 时，按页面提示登录 DeepSeek 账号，或配置 DeepSeek 模型的 API key。
-2. 在 DSH 中正常发送消息。
-3. AI 正常结束回复后，等待守岸人自动朗读。音量由运行 DSH 的 Mac 的系统音量控制。
+句子按顺序合成，也按顺序播放。下一句可以在上一句还在播的时候先去合成。打断有两个入口，都会停下当前播放并丢掉还没说的缓冲：
 
-插件使用 `sunny-fern-4510__shorekeeper-pro` 音色、`inworld-tts-2` 模型和 1.0x 语速。它只播报正常完成的回合；取消或失败的回合不会播报。播报文本会发送至 Inworld，音频会写入系统临时目录，并在下一次播放时覆盖。
+- `Control+Option+.`。第一次会向这个小程序要辅助功能权限，不给 DeepSeek Harness 本身。
+- `/shush`
 
-## 停止和重新启动
+网页进程和桌面进程各自听自己的快捷键，只停自己那一份播放。
 
-回到 DSH 所在的 tmux 会话后，按 `Ctrl-c` 停止 DSH，再输入 `exit` 结束该 tmux 会话。需要重新启动时，从“启动”步骤重新配置 Inworld key 并运行命令。不要把真实 key 写进源码、README 或提交到 GitHub。
+## 提示词
 
-## 遇到问题
+每轮都放人格本身。`06-世界.md` 的关键词段、角色卡里没有标成常驻的世界书，只有用户这一句碰到对应词才放进来。开场只取当前时段，好感例句只取「至交」，各随机最多 4 句。没有好感存档。
 
-- 没有声音：检查 Mac 的音量和输出设备，确认 DSH 是在本机运行，并查看 DSH 所在终端是否有 `[dsh-shorekeeper-tts]` 错误。
-- 提示 `INWORLD_API_KEY is not configured`：在启动 DSH 的环境中设置 Inworld key，然后重启 DSH。
-- AI 无法回复：检查 DSH 中的 DeepSeek 登录状态或模型 API key；它与 Inworld key 分开配置。
-- 端口已被占用：启动 DSH 时换用其他高于 10000 的空闲端口。
+用户这一句来自当前 session 里最后一条人类 `user/message` 的 text 块。没有 session 时，关键词段不放。
 
-## 验证插件
-
-在本仓库目录中运行：
+## 验证
 
 ```sh
 node --test test.mjs
 ```
 
-这些测试使用模拟数据，不会请求 Inworld。验证真实播报时，请在 DSH 中发送一条简短消息并等待 AI 完成回复。
+测试不请求 Inworld。

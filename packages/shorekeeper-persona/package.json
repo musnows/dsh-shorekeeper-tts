@@ -1,0 +1,18 @@
+{
+  "name": "@dsh-local/shorekeeper-persona",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness 的守岸人人设。加载后即进入，不需要进入指令。",
+  "main": "./persona.mjs",
+  "exports": {
+    ".": "./persona.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "persona.mjs",
+    "locale",
+    "shorekeeper-source"
+  ]
+}
