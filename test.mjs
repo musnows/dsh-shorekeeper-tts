@@ -8,9 +8,12 @@ import {
   shouldReadPersonaFile,
 } from './persona.mjs'
 import {
+  Config,
   createShorekeeperTtsPlugin,
   createSpeechBuffer,
   loadInworldApiKey,
+  snapSpeakingRate,
+  speakingRateOf,
   synthesize,
   visibleText,
 } from './plugin.mjs'
@@ -73,14 +76,15 @@ test('tilde fences are silent and a mid-line fence marker stays prose', () => {
   assert.equal(spoken.includes(repeat('字', 21)), true)
 })
 
-function mountPlugin(options) {
+function mountPlugin(options = {}) {
   const handlers = new Map()
   let command
   let api
+  const { config, ...pluginOptions } = options
   const apply = createShorekeeperTtsPlugin({
     hotkey: false,
     onReady(value) { api = value },
-    ...options,
+    ...pluginOptions,
   })
   apply({
     on(event, handler) {
@@ -94,7 +98,7 @@ function mountPlugin(options) {
         return () => {}
       },
     },
-  })
+  }, config)
   return {
     command,
     api,
@@ -172,6 +176,52 @@ test('/shush drops unspoken text and stops the current playback', async () => {
   await mounted.api.whenIdle()
   assert.deepEqual(synthesized, [`${repeat('甲', 21)}。`])
   assert.equal(synthesized.some(text => text.includes('尾巴')), false)
+})
+
+test('snaps speaking rate to tenths between 0.8 and 1.5', async () => {
+  assert.equal(snapSpeakingRate(0.11), 0.8)
+  assert.equal(snapSpeakingRate(0.79), 0.8)
+  assert.equal(snapSpeakingRate(1.14), 1.1)
+  assert.equal(snapSpeakingRate(1.16), 1.2)
+  assert.equal(snapSpeakingRate(2), 1.5)
+  assert.equal(snapSpeakingRate('fast'), 1)
+  assert.throws(() => Config({ speakingRate: 1.11 }))
+  assert.throws(() => Config({ speakingRate: 0.7 }))
+  assert.equal(Config({ speakingRate: 1.2 }).speakingRate.get(), 1.2)
+  assert.equal(speakingRateOf(undefined), 1)
+
+  let request
+  const fetchImpl = async (_url, init) => {
+    request = init
+    return new Response(`${JSON.stringify({ result: { audioContent: Buffer.from('mp3').toString('base64') } })}\n`, { status: 200 })
+  }
+  await synthesize('hello', 'test-key', fetchImpl, { speakingRate: 0.11 })
+  assert.equal(JSON.parse(request.body).audio_config.speaking_rate, 0.8)
+
+  let current = 1
+  const seen = []
+  let releaseFirst
+  const firstGate = new Promise(resolve => { releaseFirst = resolve })
+  const mounted = mountPlugin({
+    config: { speakingRate: { get: () => current } },
+    getApiKey: () => 'test-key',
+    synthesizeAudio: async (text, _key, _fetch, options) => {
+      seen.push(options.speakingRate)
+      if (seen.length === 1) await firstGate
+      return Buffer.from(text)
+    },
+    playAudio: async () => {},
+  })
+  const sentence = mark => `${repeat(mark, 21)}。`
+  mounted.emit({
+    frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${sentence('甲')}${sentence('乙')}` } },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(seen, [1])
+  current = 1.4
+  releaseFirst()
+  await mounted.api.whenIdle()
+  assert.deepEqual(seen, [1, 1.4])
 })
 
 test('sends the Shorekeeper voice and normal speaking rate to Inworld', async () => {
@@ -294,4 +344,15 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   assert.equal(patch.includes("personaPrefix: ''"), true)
   assert.equal(patch.includes("'./plugin.mjs'"), true)
   assert.equal(patch.includes("'./persona.mjs'"), true)
+  assert.equal(patch.includes('id: 守岸人语音'), true)
+
+  const manifest = JSON.parse(readFileSync(new URL('./packages/shorekeeper-tts/package.json', import.meta.url), 'utf8'))
+  assert.equal(manifest.exports['./client'], './client.js')
+  assert.equal(manifest.dsh.client.platform, 'web')
+  assert.equal(manifest.dsh.client.immediately, true)
+  const client = readFileSync(new URL('./packages/shorekeeper-tts/client.js', import.meta.url), 'utf8')
+  assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
+  assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
+  assert.equal(client.includes('shorekeeper-speaking-rate-v2'), true)
+  assert.equal(client.includes('语速 0.8x–1.5x'), true)
 })
