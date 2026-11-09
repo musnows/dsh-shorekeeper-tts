@@ -5,7 +5,7 @@
     personaPrefix: ''
 
 - insert:
-    - id: shorekeeper-tts
+    - id: 守岸人语音
       name: './plugin.mjs'
     - id: shorekeeper-persona
       name: './persona.mjs'

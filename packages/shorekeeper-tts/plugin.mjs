@@ -4,6 +4,7 @@ import { unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import Schema from '@deepseek-ai/schemastery'
 
 const TTS_ENDPOINT = 'https://api.inworld.ai/tts/v1/voice:stream'
 const VOICE_ID = 'sunny-fern-4510__shorekeeper-pro'
@@ -12,6 +13,30 @@ const FENCE_READY = /^ {0,3}(`{3,}|~{3,})/
 const FENCE_PARTIAL = /^ {0,3}(`{0,2}|~{0,2})$/
 
 let audioSerial = 0
+
+const RATE_MIN = 0.8
+const RATE_MAX = 1.5
+const RATE_STEP = 0.1
+
+export const Config = Schema.object({
+  speakingRate: Schema.number().min(RATE_MIN).max(RATE_MAX).step(RATE_STEP).default(1).volatile(),
+})
+
+export function snapSpeakingRate(value) {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number)) return 1
+  const steps = Math.round((number - RATE_MIN) / RATE_STEP)
+  const snapped = Math.round((RATE_MIN + steps * RATE_STEP) * 10) / 10
+  if (snapped < RATE_MIN) return RATE_MIN
+  if (snapped > RATE_MAX) return RATE_MAX
+  return snapped
+}
+
+export function speakingRateOf(config) {
+  const read = config?.speakingRate?.get
+  if (typeof read !== 'function') return 1
+  return snapSpeakingRate(read.call(config.speakingRate))
+}
 
 export function visibleText(content) {
   return content
@@ -160,8 +185,9 @@ export function loadInworldApiKey({
   }
 }
 
-export async function synthesize(text, apiKey, fetchImpl = fetch) {
+export async function synthesize(text, apiKey, fetchImpl = fetch, options = {}) {
   if (!apiKey) throw new Error('INWORLD_API_KEY is not configured.')
+  const speakingRate = snapSpeakingRate(options.speakingRate ?? 1)
 
   const response = await fetchImpl(TTS_ENDPOINT, {
     method: 'POST',
@@ -174,7 +200,7 @@ export async function synthesize(text, apiKey, fetchImpl = fetch) {
       text,
       voice_id: VOICE_ID,
       model_id: 'inworld-tts-2',
-      audio_config: { audio_encoding: 'MP3', speaking_rate: 1 },
+      audio_config: { audio_encoding: 'MP3', speaking_rate: speakingRate },
       delivery_mode: 'BALANCED',
       language: 'AUTO',
     }),
@@ -328,15 +354,22 @@ function frameOf(payload, second) {
 
 export function createShorekeeperTtsPlugin({
   getApiKey = () => loadInworldApiKey(),
-  synthesizeAudio = synthesize,
+  synthesizeAudio,
   playAudio = playMp3,
   hotkey = true,
   startHotkey = startStopHotkey,
   onReady,
 } = {}) {
-  return function apply(ctx) {
+  return function apply(ctx, config) {
     const buffer = createSpeechBuffer()
-    const speaker = createSpeaker({ synthesizeAudio, playAudio, getApiKey })
+    const run = synthesizeAudio ?? synthesize
+    const speaker = createSpeaker({
+      synthesizeAudio: (text, key) => run(text, key, fetch, {
+        speakingRate: speakingRateOf(config),
+      }),
+      playAudio,
+      getApiKey,
+    })
 
     const enqueueAll = sentences => {
       for (const sentence of sentences) speaker.enqueue(sentence)
