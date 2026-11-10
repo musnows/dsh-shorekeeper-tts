@@ -340,30 +340,35 @@
 
     let dragging = false
     let moved = false
-    let last = null
+    let origin = null
     window.addEventListener('pointerdown', event => {
       if (event.button !== 0) return
       if (!event.target.closest('#close')) closeButton.classList.remove('show')
       if (event.target.closest('[data-nodrag]')) return
       dragging = true
       moved = false
-      last = { x: event.screenX, y: event.screenY }
+      origin = { x: event.screenX, y: event.screenY }
+      /* Native Cocoa tracks NSEvent.mouseLocation so multi-monitor drags keep
+         working after the cursor leaves this WebView / screen. */
+      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'drag-start' })
     })
     window.addEventListener('pointermove', event => {
-      if (!dragging || !last) return
-      const dx = event.screenX - last.x
-      const dy = event.screenY - last.y
-      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true
-      last = { x: event.screenX, y: event.screenY }
-      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'move', dx, dy })
+      if (!dragging || !origin) return
+      if (Math.abs(event.screenX - origin.x) + Math.abs(event.screenY - origin.y) > 3) moved = true
     })
     window.addEventListener('pointerup', () => {
       const wasDrag = moved
       dragging = false
-      last = null
+      origin = null
+      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'drag-end' })
       if (!wasDrag && (!socket || socket.readyState !== WebSocket.OPEN)) {
         start().catch(error => showBubble(error.message))
       }
+    })
+    window.addEventListener('pointercancel', () => {
+      dragging = false
+      origin = null
+      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'drag-end' })
     })
 
     start().catch(error => showBubble(error.message))
