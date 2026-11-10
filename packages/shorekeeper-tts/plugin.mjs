@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { unlink, writeFile } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
@@ -480,13 +480,92 @@ function petWanted() {
 }
 
 export function petRoot() {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const candidates = [
-    join(here, '../../realtime-demo'),
-    join(homedir(), '.worktree/bc6aceed/dsh-shorekeeper-tts/realtime-demo'),
-    join(homedir(), 'Projects/dsh-shorekeeper-tts/realtime-demo'),
-  ]
-  return candidates.find(dir => existsSync(join(dir, 'launch-pet.mjs'))) ?? null
+  const root = join(dirname(fileURLToPath(import.meta.url)), 'realtime-demo')
+  return existsSync(join(root, 'server.mjs')) ? root : null
+}
+
+function petAppPaths(root = petRoot()) {
+  if (!root) return null
+  const app = join(root, 'mac', 'ShorekeeperPet.app')
+  return {
+    root,
+    app,
+    bin: join(app, 'Contents', 'MacOS', 'ShorekeeperPet'),
+    plist: join(root, 'mac', 'Info.plist'),
+    source: join(root, 'mac', 'main.swift'),
+  }
+}
+
+function ensurePetDependencies(root) {
+  if (existsSync(join(root, 'node_modules', 'ws'))) return { ok: true }
+  const install = spawnSync('npm', ['install', '--omit=dev', '--registry', 'https://registry.npmjs.org'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
+    },
+  })
+  if (install.status !== 0) {
+    const detail = String(install.stderr || install.stdout || '').trim()
+    return {
+      ok: false,
+      error: {
+        code: 'failed',
+        message: detail ? `桌宠依赖安装失败：${detail}` : '桌宠依赖安装失败。',
+      },
+    }
+  }
+  return { ok: true }
+}
+
+function ensurePetApp(root) {
+  const paths = petAppPaths(root)
+  if (!paths) return { ok: false, error: { code: 'not-found', message: '找不到桌宠。' } }
+  if (!existsSync(paths.source) || !existsSync(paths.plist)) {
+    return { ok: false, error: { code: 'not-found', message: '桌宠源码不完整。' } }
+  }
+
+  const deps = ensurePetDependencies(root)
+  if (!deps.ok) return deps
+
+  mkdirSync(dirname(paths.bin), { recursive: true })
+  copyFileSync(paths.plist, join(paths.app, 'Contents', 'Info.plist'))
+
+  const binaryTime = existsSync(paths.bin) ? statSync(paths.bin).mtimeMs : 0
+  if (statSync(paths.source).mtimeMs <= binaryTime) return { ok: true, value: paths }
+
+  if (process.platform !== 'darwin') {
+    return { ok: false, error: { code: 'unsupported', message: '桌宠窗口目前只支持 macOS。' } }
+  }
+
+  const compiled = spawnSync('swiftc', [
+    '-O', '-o', paths.bin, paths.source,
+    '-framework', 'Cocoa',
+    '-framework', 'WebKit',
+    '-framework', 'AVFoundation',
+    '-framework', 'AudioToolbox',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
+    },
+  })
+  if (compiled.status !== 0) {
+    const detail = String(compiled.stderr || compiled.stdout || '').trim()
+    return {
+      ok: false,
+      error: {
+        code: 'failed',
+        message: detail ? `桌宠编译失败：${detail}` : '桌宠编译失败。需要本机有 Xcode/Command Line Tools。',
+      },
+    }
+  }
+  spawnSync('codesign', [
+    '--force', '--sign', '-', '--identifier', 'local.shorekeeper.pet', paths.app,
+  ], { encoding: 'utf8' })
+  return { ok: true, value: paths }
 }
 
 function nodeBinary() {
@@ -594,12 +673,9 @@ function rpcResult(result) {
 
 export async function startPet(gate = GATE_DEFAULT) {
   closingPet = false
-  const root = petRoot()
-  if (!root) return { ok: false, error: { code: 'not-found', message: '找不到桌宠。' } }
-  const app = join(root, 'mac', 'ShorekeeperPet.app')
-  if (!existsSync(join(app, 'Contents', 'MacOS', 'ShorekeeperPet'))) {
-    return { ok: false, error: { code: 'not-found', message: '桌宠程序不存在。' } }
-  }
+  const prepared = ensurePetApp(petRoot())
+  if (!prepared.ok) return prepared
+  const { root, app } = prepared.value
   const up = await ensurePetServer(root)
   if (!up) return { ok: false, error: { code: 'unavailable', message: '语音服务没有起来。' } }
   if (petWindowPids().length === 0) {

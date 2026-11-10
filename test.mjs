@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
   buildShorekeeperPrompt,
@@ -14,6 +15,7 @@ import {
   createSpeechBuffer,
   loadInworldApiKey,
   minSpokenOf,
+  petRoot,
   sentencesForReplay,
   snapMinSpoken,
   afplayArgs,
@@ -237,6 +239,15 @@ test('snaps speaking rate to tenths between 0.8 and 1.5', async () => {
   releaseFirst()
   await mounted.api.whenIdle()
   assert.deepEqual(seen, [1, 1.4])
+})
+
+test('resolves the bundled realtime pet next to the TTS package', () => {
+  const root = petRoot()
+  assert.ok(root)
+  assert.equal(existsSync(join(root, 'server.mjs')), true)
+  assert.equal(existsSync(join(root, 'mac', 'main.swift')), true)
+  assert.equal(existsSync(join(root, 'mac', 'Info.plist')), true)
+  assert.match(root, /packages\/shorekeeper-tts\/realtime-demo$/)
 })
 
 test('snaps min spoken length to fives between 20 and 50', () => {

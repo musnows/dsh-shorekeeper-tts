@@ -18,6 +18,7 @@ export {
   speechEnabledOf,
   volumeOf,
   inputGateOf,
+  petRoot,
   snapInputGate,
   synthesize,
   visibleText,
