@@ -9,9 +9,13 @@ import {
 } from './persona.mjs'
 import {
   Config,
+  assistantMessageTextFromEvents,
   createShorekeeperTtsPlugin,
   createSpeechBuffer,
   loadInworldApiKey,
+  minSpokenOf,
+  sentencesForReplay,
+  snapMinSpoken,
   snapSpeakingRate,
   speakingRateOf,
   speechEnabledOf,
@@ -20,6 +24,7 @@ import {
 } from './plugin.mjs'
 
 const repeat = (text, count) => text.repeat(count)
+const longSentence = (mark, count = 31) => `${repeat(mark, count)}。`
 
 test('extracts only visible assistant text blocks', () => {
   assert.equal(visibleText([
@@ -30,51 +35,55 @@ test('extracts only visible assistant text blocks', () => {
   ]), 'Hello world')
 })
 
-test('keeps short sentences together until a later delimiter passes 20 characters', () => {
+test('keeps short sentences together until a later delimiter passes 30 characters', () => {
   const buffer = createSpeechBuffer()
-  assert.deepEqual(buffer.push(`${repeat('字', 19)}。`), [])
-  assert.deepEqual(buffer.finish(), [`${repeat('字', 19)}。`])
+  assert.deepEqual(buffer.push(`${repeat('字', 29)}。`), [])
+  assert.deepEqual(buffer.finish(), [`${repeat('字', 29)}。`])
 
   const joined = createSpeechBuffer()
-  assert.deepEqual(joined.push(`${repeat('字', 19)}。`), [])
-  assert.deepEqual(joined.push(`${repeat('字', 20)}\n`), [`${repeat('字', 19)}。${repeat('字', 20)}`])
-  assert.deepEqual(joined.push(`${repeat('句', 21)}。`), [`${repeat('句', 21)}。`])
+  assert.deepEqual(joined.push(`${repeat('字', 29)}。`), [])
+  assert.deepEqual(joined.push(`${repeat('字', 30)}\n`), [`${repeat('字', 29)}。${repeat('字', 30)}`])
+  assert.deepEqual(joined.push(`${repeat('句', 31)}。`), [`${repeat('句', 31)}。`])
   assert.deepEqual(joined.finish(), [])
 })
 
-test('splits on the next period or newline only after the spoken length passes 20', () => {
+test('splits on the next period or newline only after the spoken length passes the threshold', () => {
   const buffer = createSpeechBuffer()
-  assert.deepEqual(buffer.push(`${repeat('字', 21)}。${repeat('句', 21)}。`), [
-    `${repeat('字', 21)}。`,
-    `${repeat('句', 21)}。`,
+  assert.deepEqual(buffer.push(`${repeat('字', 31)}。${repeat('句', 31)}。`), [
+    `${repeat('字', 31)}。`,
+    `${repeat('句', 31)}。`,
   ])
-  assert.deepEqual(buffer.push(`${repeat('行', 21)}\n${repeat('尾', 3)}`), [`${repeat('行', 21)}`])
+  assert.deepEqual(buffer.push(`${repeat('行', 31)}\n${repeat('尾', 3)}`), [`${repeat('行', 31)}`])
   assert.deepEqual(buffer.push(`${repeat('，', 30)}`), [])
   assert.deepEqual(buffer.finish(), [`${repeat('尾', 3)}${repeat('，', 30)}`])
+
+  const custom = createSpeechBuffer({ minSpoken: 20 })
+  assert.deepEqual(custom.push(`${repeat('字', 19)}。`), [])
+  assert.deepEqual(custom.push(`${repeat('字', 20)}\n`), [`${repeat('字', 19)}。${repeat('字', 20)}`])
 })
 
 test('drops fenced code and joins the prose around it', () => {
   const buffer = createSpeechBuffer()
   const spoken = [
     ...buffer.push('前文留下。\n```js\nconsole.log("hi.")\n~~~\nnot a close\n```\n'),
-    ...buffer.push(`${repeat('后', 21)}。`),
+    ...buffer.push(`${repeat('后', 31)}。`),
     ...buffer.finish(),
   ].join('')
   assert.equal(spoken.includes('console'), false)
   assert.equal(spoken.includes('not a close'), false)
   assert.equal(spoken.includes('前文留下。'), true)
-  assert.equal(spoken.includes(repeat('后', 21)), true)
+  assert.equal(spoken.includes(repeat('后', 31)), true)
 })
 
 test('tilde fences are silent and a mid-line fence marker stays prose', () => {
   const buffer = createSpeechBuffer()
   const spoken = [
-    ...buffer.push(`看这段\`\`\`${repeat('字', 21)}。\n~~~\nhidden。\n~~~\n`),
+    ...buffer.push(`看这段\`\`\`${repeat('字', 31)}。\n~~~\nhidden。\n~~~\n`),
     ...buffer.finish(),
   ].join('')
   assert.equal(spoken.includes('hidden'), false)
   assert.equal(spoken.includes('```'), true)
-  assert.equal(spoken.includes(repeat('字', 21)), true)
+  assert.equal(spoken.includes(repeat('字', 31)), true)
 })
 
 function mountPlugin(options = {}) {
@@ -132,25 +141,24 @@ test('reads text deltas, finishes the tail once, and ignores reasoning and tool 
 test('synthesizes the next sentence while the previous one is still playing', async () => {
   const synths = []
   const plays = []
-  const sentence = mark => `${repeat(mark, 21)}。`
   const mounted = mountPlugin({
     getApiKey: () => 'test-key',
     synthesizeAudio: text => new Promise(resolve => { synths.push({ text, resolve }) }),
     playAudio: audio => new Promise(resolve => { plays.push({ audio, resolve }) }),
   })
-  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${sentence('甲')}${sentence('乙')}` } } })
+  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${longSentence('甲')}${longSentence('乙')}` } } })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(synths.length, 1)
   synths[0].resolve(Buffer.from(synths[0].text))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(plays.length, 1)
   assert.equal(synths.length, 2)
-  assert.equal(plays[0].audio.toString(), sentence('甲'))
+  assert.equal(plays[0].audio.toString(), longSentence('甲'))
   synths[1].resolve(Buffer.from(synths[1].text))
   plays[0].resolve()
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(plays.length, 2)
-  assert.equal(plays[1].audio.toString(), sentence('乙'))
+  assert.equal(plays[1].audio.toString(), longSentence('乙'))
   plays[1].resolve()
   await mounted.api.whenIdle()
 })
@@ -171,14 +179,14 @@ test('/shush drops unspoken text and stops the current playback', async () => {
       })
     }),
   })
-  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${repeat('甲', 21)}。尾巴` } } })
+  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${longSentence('甲')}尾巴` } } })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(mounted.command.name, 'shush')
   assert.deepEqual(mounted.command.handler(), { kind: 'success', text: '已经停下。' })
   assert.equal(killed, true)
   mounted.emit({ frame: { type: 'end' } })
   await mounted.api.whenIdle()
-  assert.deepEqual(synthesized, [`${repeat('甲', 21)}。`])
+  assert.deepEqual(synthesized, [longSentence('甲')])
   assert.equal(synthesized.some(text => text.includes('尾巴')), false)
 })
 
@@ -216,9 +224,8 @@ test('snaps speaking rate to tenths between 0.8 and 1.5', async () => {
     },
     playAudio: async () => {},
   })
-  const sentence = mark => `${repeat(mark, 21)}。`
   mounted.emit({
-    frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${sentence('甲')}${sentence('乙')}` } },
+    frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${longSentence('甲')}${longSentence('乙')}` } },
   })
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(seen, [1])
@@ -226,6 +233,79 @@ test('snaps speaking rate to tenths between 0.8 and 1.5', async () => {
   releaseFirst()
   await mounted.api.whenIdle()
   assert.deepEqual(seen, [1, 1.4])
+})
+
+test('snaps min spoken length to fives between 20 and 50', () => {
+  assert.equal(snapMinSpoken(19), 20)
+  assert.equal(snapMinSpoken(22), 20)
+  assert.equal(snapMinSpoken(23), 25)
+  assert.equal(snapMinSpoken(33), 35)
+  assert.equal(snapMinSpoken(51), 50)
+  assert.equal(snapMinSpoken('slow'), 30)
+  assert.throws(() => Config({ minSpoken: 21 }))
+  assert.throws(() => Config({ minSpoken: 15 }))
+  assert.equal(Config({}).minSpoken.get(), 30)
+  assert.equal(Config({ minSpoken: 40 }).minSpoken.get(), 40)
+  assert.equal(minSpokenOf(undefined), 30)
+  assert.equal(minSpokenOf({ minSpoken: { get: () => 22 } }), 20)
+})
+
+test('replays a finalized assistant message as full spoken sentences', async () => {
+  assert.deepEqual(
+    assistantMessageTextFromEvents([
+      { type: 'assistant/message', data: { message: { id: 'm1', content: [{ type: 'reasoning', text: 'hidden' }, { type: 'text', text: longSentence('甲') }] } } },
+    ], 'm1'),
+    { messageId: 'm1', text: longSentence('甲') },
+  )
+  assert.equal(assistantMessageTextFromEvents([], 'missing'), null)
+  assert.deepEqual(sentencesForReplay(`${longSentence('甲')}${longSentence('乙')}`, 30), [
+    longSentence('甲'),
+    longSentence('乙'),
+  ])
+
+  const spoken = []
+  let api
+  const agents = new Map([['session-1', {
+    session: {
+      snapshotEvents: () => [{
+        type: 'assistant/message',
+        data: { message: { id: 'msg-1', content: [{ type: 'text', text: `${longSentence('重')}${longSentence('播')}` }] } },
+      }],
+    },
+  }]])
+  let rpcHandler
+  const apply = createShorekeeperTtsPlugin({
+    hotkey: false,
+    onReady(value) { api = value },
+    getApiKey: () => 'test-key',
+    synthesizeAudio: async text => Buffer.from(text),
+    playAudio: async audio => { spoken.push(audio.toString()) },
+  })
+  apply({
+    agents,
+    on() {},
+    commands: { register() { return () => {} } },
+    inject(deps, callback) {
+      assert.deepEqual(deps, ['connection', 'webServer'])
+      callback({
+        webServer: { register() { return () => {} } },
+        connection: {
+          rpc: {
+            handle(channel, handler) {
+              assert.equal(channel, '/shorekeeper-tts')
+              rpcHandler = handler
+              return () => {}
+            },
+          },
+        },
+        on() {},
+      })
+    },
+  }, {})
+  const result = await rpcHandler('speak', { sessionId: 'session-1', messageId: 'msg-1' })
+  assert.equal(result.ok, true)
+  await api.whenIdle()
+  assert.deepEqual(spoken, [longSentence('重'), longSentence('播')])
 })
 
 test('turning speech off stops playback and drops later sentences', async () => {
@@ -253,14 +333,14 @@ test('turning speech off stops playback and drops later sentences', async () => 
       })
     }),
   })
-  const sentence = `${repeat('甲', 21)}。`
+  const sentence = longSentence('甲')
   mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: sentence } } })
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(synthesized, [sentence])
   enabled = false
   mounted.emitEvent('loader/volatile-update', [['enabled']])
   assert.equal(killed, true)
-  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${repeat('乙', 21)}。` } } })
+  mounted.emit({ frame: { type: 'chunk', chunk: { type: 'text-delta', text: longSentence('乙') } } })
   mounted.emit({ frame: { type: 'end' } })
   await mounted.api.whenIdle()
   assert.deepEqual(synthesized, [sentence])
@@ -395,7 +475,12 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   const client = readFileSync(new URL('./packages/shorekeeper-tts/client.js', import.meta.url), 'utf8')
   assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
   assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
-  assert.equal(client.includes('shorekeeper-speaking-rate-v3'), true)
-  assert.equal(client.includes('语速 0.8x–1.5x'), true)
+  assert.equal(client.includes('shorekeeper-speaking-rate-v6'), true)
+  assert.equal(client.includes('语速 0.8x–1.5x · 起送 20–50 字'), true)
+  assert.equal(client.includes('起送字数'), true)
+  assert.equal(client.includes('minSpoken'), true)
   assert.equal(client.includes('关闭播报'), true)
+  assert.equal(client.includes("id: 'shorekeeper-speak'"), true)
+  assert.equal(client.includes('conversation.chat.assistant-actions'), true)
+  assert.equal(client.includes('语音重播'), true)
 })

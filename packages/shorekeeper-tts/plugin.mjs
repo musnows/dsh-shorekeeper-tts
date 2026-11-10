@@ -8,7 +8,6 @@ import Schema from '@deepseek-ai/schemastery'
 
 const TTS_ENDPOINT = 'https://api.inworld.ai/tts/v1/voice:stream'
 const VOICE_ID = 'sunny-fern-4510__shorekeeper-pro'
-const MIN_SPOKEN = 20
 const FENCE_READY = /^ {0,3}(`{3,}|~{3,})/
 const FENCE_PARTIAL = /^ {0,3}(`{0,2}|~{0,2})$/
 
@@ -18,8 +17,14 @@ const RATE_MIN = 0.8
 const RATE_MAX = 1.5
 const RATE_STEP = 0.1
 
+const SPOKEN_MIN = 20
+const SPOKEN_MAX = 50
+const SPOKEN_STEP = 5
+const SPOKEN_DEFAULT = 30
+
 export const Config = Schema.object({
   speakingRate: Schema.number().min(RATE_MIN).max(RATE_MAX).step(RATE_STEP).default(1).volatile(),
+  minSpoken: Schema.number().min(SPOKEN_MIN).max(SPOKEN_MAX).step(SPOKEN_STEP).default(SPOKEN_DEFAULT).volatile(),
   enabled: Schema.boolean().default(true).volatile(),
 })
 
@@ -33,10 +38,26 @@ export function snapSpeakingRate(value) {
   return snapped
 }
 
+export function snapMinSpoken(value) {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number)) return SPOKEN_DEFAULT
+  const steps = Math.round((number - SPOKEN_MIN) / SPOKEN_STEP)
+  const snapped = SPOKEN_MIN + steps * SPOKEN_STEP
+  if (snapped < SPOKEN_MIN) return SPOKEN_MIN
+  if (snapped > SPOKEN_MAX) return SPOKEN_MAX
+  return snapped
+}
+
 export function speakingRateOf(config) {
   const read = config?.speakingRate?.get
   if (typeof read !== 'function') return 1
   return snapSpeakingRate(read.call(config.speakingRate))
+}
+
+export function minSpokenOf(config) {
+  const read = config?.minSpoken?.get
+  if (typeof read !== 'function') return SPOKEN_DEFAULT
+  return snapMinSpoken(read.call(config.minSpoken))
 }
 
 export function speechEnabledOf(config) {
@@ -52,6 +73,23 @@ export function visibleText(content) {
     .join('')
 }
 
+/** Join visible text of one finalized assistant message from a session event log. */
+export function assistantMessageTextFromEvents(events, messageId) {
+  for (const event of events ?? []) {
+    if (event?.type !== 'assistant/message') continue
+    const message = event.data?.message
+    if (!message || typeof message !== 'object' || message.id !== messageId) continue
+    const text = visibleText(Array.isArray(message.content) ? message.content : []).trim()
+    return text === '' ? null : { messageId, text }
+  }
+  return null
+}
+
+export function sentencesForReplay(text, minSpoken = SPOKEN_DEFAULT) {
+  const buffer = createSpeechBuffer({ minSpoken })
+  return [...buffer.push(String(text ?? '')), ...buffer.finish()]
+}
+
 export function spokenLength(text) {
   return text.replace(/\s/g, '').length
 }
@@ -61,7 +99,10 @@ function fenceMark(line) {
   return match ? match[1][0] : ''
 }
 
-export function createSpeechBuffer() {
+export function createSpeechBuffer(options = {}) {
+  const resolveMinSpoken = typeof options.minSpoken === 'function'
+    ? options.minSpoken
+    : () => snapMinSpoken(options.minSpoken ?? SPOKEN_DEFAULT)
   let pendingLine = ''
   let atLineStart = true
   let inFence = false
@@ -70,12 +111,13 @@ export function createSpeechBuffer() {
 
   function takeSentences(force) {
     const ready = []
+    const minSpoken = resolveMinSpoken()
     while (speak.length > 0) {
       let cut = -1
       for (let index = 0; index < speak.length; index += 1) {
         const char = speak[index]
         if (char !== '。' && char !== '\n') continue
-        if (spokenLength(speak.slice(0, index + 1)) > MIN_SPOKEN) {
+        if (spokenLength(speak.slice(0, index + 1)) > minSpoken) {
           cut = index
           break
         }
@@ -359,6 +401,8 @@ function frameOf(payload, second) {
   return payload
 }
 
+const SPEAK_CHANNEL = '/shorekeeper-tts'
+
 export function createShorekeeperTtsPlugin({
   getApiKey = () => loadInworldApiKey(),
   synthesizeAudio,
@@ -368,7 +412,9 @@ export function createShorekeeperTtsPlugin({
   onReady,
 } = {}) {
   return function apply(ctx, config) {
-    const buffer = createSpeechBuffer()
+    const buffer = createSpeechBuffer({
+      minSpoken: () => minSpokenOf(config),
+    })
     const run = synthesizeAudio ?? synthesize
     const speaker = createSpeaker({
       synthesizeAudio: (text, key) => run(text, key, fetch, {
@@ -378,14 +424,42 @@ export function createShorekeeperTtsPlugin({
       getApiKey,
     })
 
-    const enqueueAll = sentences => {
-      if (!speechEnabledOf(config)) return
+    const enqueueAll = (sentences, { force = false } = {}) => {
+      if (!force && !speechEnabledOf(config)) return
       for (const sentence of sentences) speaker.enqueue(sentence)
     }
 
     const stop = () => {
       speaker.stop()
       buffer.clear()
+    }
+
+    const speakFull = text => {
+      const trimmed = String(text ?? '').trim()
+      if (!trimmed) return { ok: false, error: { message: '没有可朗读的正文。' } }
+      stop()
+      const sentences = sentencesForReplay(trimmed, minSpokenOf(config))
+      if (sentences.length === 0) return { ok: false, error: { message: '没有可朗读的正文。' } }
+      enqueueAll(sentences, { force: true })
+      return { ok: true, value: { sentences: sentences.length } }
+    }
+
+    const lookupAssistantText = (sessionId, messageId) => {
+      if (typeof messageId !== 'string' || messageId.trim() === '') return null
+      const agents = ctx.agents ?? ctx.get?.('agents')
+      if (!agents) return null
+      const direct = typeof sessionId === 'string' && sessionId.trim() !== ''
+        ? agents.get?.(sessionId.trim())
+        : undefined
+      const candidates = direct
+        ? [direct]
+        : (typeof agents.values === 'function' ? [...agents.values()] : [])
+      for (const agent of candidates) {
+        const events = agent?.session?.snapshotEvents?.()
+        const found = assistantMessageTextFromEvents(events, messageId)
+        if (found) return found
+      }
+      return null
     }
 
     ctx.on?.('loader/volatile-update', () => {
@@ -426,12 +500,54 @@ export function createShorekeeperTtsPlugin({
     })
 
     const disposeHotkey = hotkey ? startHotkey(stop) : () => {}
+    let disposeRpc = () => {}
+    // Dedicated RPC channels must register on a context that also has webServer,
+    // otherwise connection.rpc.handle cannot mount the HTTP prefix (mnemon does
+    // the same inject pair). Without this, the browser gets 404 and the button
+    // looks like a no-op.
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['connection', 'webServer'], scope => {
+        try {
+          const host = typeof scope.extend === 'function'
+            ? scope.extend({ webServer: scope.webServer ?? scope.get?.('webServer') })
+            : scope
+          const connection = host.connection ?? scope.connection
+          if (!connection?.rpc?.handle) {
+            console.error('[dsh-shorekeeper-tts] connection.rpc.handle is unavailable')
+            return
+          }
+          const remove = connection.rpc.handle(SPEAK_CHANNEL, async (endpoint, payload) => {
+            if (endpoint !== 'speak') {
+              return { ok: false, error: { message: `unknown endpoint: ${String(endpoint)}` } }
+            }
+            const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
+            const messageId = typeof payload?.messageId === 'string' ? payload.messageId : ''
+            const directText = typeof payload?.text === 'string' ? payload.text.trim() : ''
+            if (directText) return speakFull(directText)
+            const found = lookupAssistantText(sessionId, messageId)
+            if (!found) {
+              console.error(`[dsh-shorekeeper-tts] message text not found session=${sessionId} message=${messageId}`)
+              return { ok: false, error: { message: '无法从会话记录提取这条消息的文本。' } }
+            }
+            return speakFull(found.text)
+          })
+          disposeRpc = typeof remove === 'function' ? remove : () => {}
+          scope.on?.('dispose', () => {
+            disposeRpc()
+          })
+        } catch (error) {
+          console.error(`[dsh-shorekeeper-tts] failed to register speak RPC: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+    }
+
     ctx.on?.('dispose', () => {
       disposeHotkey()
+      disposeRpc()
       if (typeof disposeCommand === 'function') disposeCommand()
     })
 
-    onReady?.({ stop, whenIdle: speaker.whenIdle, shush: stop })
+    onReady?.({ stop, whenIdle: speaker.whenIdle, shush: stop, speakFull })
   }
 }
 
