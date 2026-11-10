@@ -16,10 +16,14 @@ import {
   minSpokenOf,
   sentencesForReplay,
   snapMinSpoken,
+  afplayArgs,
+  playMp3,
   snapSpeakingRate,
+  snapVolume,
   speakingRateOf,
   speechEnabledOf,
   synthesize,
+  volumeOf,
   visibleText,
 } from './plugin.mjs'
 
@@ -308,6 +312,60 @@ test('replays a finalized assistant message as full spoken sentences', async () 
   assert.deepEqual(spoken, [longSentence('重'), longSentence('播')])
 })
 
+test('snaps playback volume to tenths between 0 and 1', async () => {
+  assert.equal(snapVolume(0.14), 0.1)
+  assert.equal(snapVolume(0.16), 0.2)
+  assert.equal(snapVolume(-1), 0)
+  assert.equal(snapVolume(2), 1)
+  assert.equal(snapVolume('loud'), 1)
+  assert.throws(() => Config({ volume: 0.11 }))
+  assert.throws(() => Config({ volume: 1.1 }))
+  assert.equal(Config({}).volume.get(), 1)
+  assert.equal(Config({ volume: 0.5 }).volume.get(), 0.5)
+  assert.equal(volumeOf(undefined), 1)
+  assert.deepEqual(afplayArgs('/tmp/line.mp3', 0.24), ['-v', '0.2', '/tmp/line.mp3'])
+
+  const calls = []
+  await playMp3(Buffer.from('mp3'), {
+    volume: 0.24,
+    spawn(command, args) {
+      calls.push([command, args])
+      return {
+        kill() {},
+        once(event, callback) {
+          if (event === 'exit') queueMicrotask(() => callback(0))
+        },
+      }
+    },
+  })
+  assert.equal(calls[0][0], 'afplay')
+  assert.equal(calls[0][1][0], '-v')
+  assert.equal(calls[0][1][1], '0.2')
+
+  let current = 0.4
+  const seen = []
+  let releaseFirst
+  const mounted = mountPlugin({
+    config: { volume: { get: () => current } },
+    getApiKey: () => 'test-key',
+    synthesizeAudio: async text => Buffer.from(text),
+    playAudio: (_audio, controls) => new Promise(resolve => {
+      seen.push(controls.volume)
+      if (seen.length === 1) releaseFirst = resolve
+      else resolve()
+    }),
+  })
+  mounted.emit({
+    frame: { type: 'chunk', chunk: { type: 'text-delta', text: `${longSentence('甲')}${longSentence('乙')}` } },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(seen, [0.4])
+  current = 0.9
+  releaseFirst()
+  await mounted.api.whenIdle()
+  assert.deepEqual(seen, [0.4, 0.9])
+})
+
 test('turning speech off stops playback and drops later sentences', async () => {
   assert.equal(speechEnabledOf(undefined), true)
   assert.equal(Config({}).enabled.get(), true)
@@ -476,7 +534,8 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
   assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
   assert.equal(client.includes('shorekeeper-speaking-rate-v6'), true)
-  assert.equal(client.includes('语速 0.8x–1.5x · 起送 20–50 字'), true)
+  assert.equal(client.includes('语速 0.8x–1.5x · 音量 0–1 · 起送 20–50 字'), true)
+  assert.equal(client.includes('音量'), true)
   assert.equal(client.includes('起送字数'), true)
   assert.equal(client.includes('minSpoken'), true)
   assert.equal(client.includes('关闭播报'), true)

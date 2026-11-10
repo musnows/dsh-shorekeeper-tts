@@ -22,9 +22,14 @@ const SPOKEN_MAX = 50
 const SPOKEN_STEP = 5
 const SPOKEN_DEFAULT = 30
 
+const VOLUME_MIN = 0
+const VOLUME_MAX = 1
+const VOLUME_STEP = 0.1
+
 export const Config = Schema.object({
   speakingRate: Schema.number().min(RATE_MIN).max(RATE_MAX).step(RATE_STEP).default(1).volatile(),
   minSpoken: Schema.number().min(SPOKEN_MIN).max(SPOKEN_MAX).step(SPOKEN_STEP).default(SPOKEN_DEFAULT).volatile(),
+  volume: Schema.number().min(VOLUME_MIN).max(VOLUME_MAX).step(VOLUME_STEP).default(1).volatile(),
   enabled: Schema.boolean().default(true).volatile(),
 })
 
@@ -64,6 +69,26 @@ export function speechEnabledOf(config) {
   const read = config?.enabled?.get
   if (typeof read !== 'function') return true
   return read.call(config.enabled) !== false
+}
+
+export function snapVolume(value) {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number)) return 1
+  const steps = Math.round((number - VOLUME_MIN) / VOLUME_STEP)
+  const snapped = Math.round((VOLUME_MIN + steps * VOLUME_STEP) * 10) / 10
+  if (snapped < VOLUME_MIN) return VOLUME_MIN
+  if (snapped > VOLUME_MAX) return VOLUME_MAX
+  return snapped
+}
+
+export function volumeOf(config) {
+  const read = config?.volume?.get
+  if (typeof read !== 'function') return 1
+  return snapVolume(read.call(config.volume))
+}
+
+export function afplayArgs(audioPath, volume) {
+  return ['-v', snapVolume(volume).toFixed(1), audioPath]
 }
 
 export function visibleText(content) {
@@ -277,7 +302,8 @@ export async function playMp3(audio, controls = {}) {
   try {
     if (controls.isCurrent && !controls.isCurrent()) return
     await new Promise((resolve, reject) => {
-      const player = spawn('afplay', [audioPath], { stdio: 'ignore' })
+      const launch = controls.spawn ?? spawn
+      const player = launch('afplay', afplayArgs(audioPath, controls.volume), { stdio: 'ignore' })
       let settled = false
       const finish = () => {
         if (settled) return
@@ -310,7 +336,7 @@ export async function playMp3(audio, controls = {}) {
   }
 }
 
-function createSpeaker({ synthesizeAudio, playAudio, getApiKey }) {
+function createSpeaker({ synthesizeAudio, playAudio, getApiKey, volumeOfPlayback = () => 1 }) {
   let generation = 0
   let synthTail = Promise.resolve()
   let playTail = Promise.resolve()
@@ -332,6 +358,7 @@ function createSpeaker({ synthesizeAudio, playAudio, getApiKey }) {
       if (!audio || gen !== generation) return
       await playAudio(audio, {
         isCurrent: () => gen === generation,
+        volume: volumeOfPlayback(),
         bindStop(stop) {
           if (gen === generation) stopPlayback = stop
         },
@@ -422,6 +449,7 @@ export function createShorekeeperTtsPlugin({
       }),
       playAudio,
       getApiKey,
+      volumeOfPlayback: () => volumeOf(config),
     })
 
     const enqueueAll = (sentences, { force = false } = {}) => {

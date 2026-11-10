@@ -12,6 +12,9 @@ window.__ModuleLoader__.load({
     const SPOKEN_MAX = 50
     const SPOKEN_STEP = 5
     const SPOKEN_DEFAULT = 30
+    const VOLUME_MIN = 0
+    const VOLUME_MAX = 1
+    const VOLUME_STEP = 0.1
     const ENTRY_ID = '守岸人语音'
     const STYLE_ID = 'shorekeeper-speaking-rate-v6'
     const SPEAK_CHANNEL = '/shorekeeper-tts'
@@ -23,6 +26,16 @@ window.__ModuleLoader__.load({
       const snapped = Math.round((RATE_MIN + steps * RATE_STEP) * 10) / 10
       if (snapped < RATE_MIN) return RATE_MIN
       if (snapped > RATE_MAX) return RATE_MAX
+      return snapped
+    }
+
+    function snapVolume(value) {
+      const number = typeof value === 'number' ? value : Number(value)
+      if (!Number.isFinite(number)) return 1
+      const steps = Math.round((number - VOLUME_MIN) / VOLUME_STEP)
+      const snapped = Math.round((VOLUME_MIN + steps * VOLUME_STEP) * 10) / 10
+      if (snapped < VOLUME_MIN) return VOLUME_MIN
+      if (snapped > VOLUME_MAX) return VOLUME_MAX
       return snapped
     }
 
@@ -152,6 +165,14 @@ window.__ModuleLoader__.load({
       return snapMinSpoken(raw)
     }
 
+    function volumeFrom(form) {
+      const snapshot = snapshotOf(form)
+      if (!snapshot) return 1
+      const raw = snapshot?.value?.volume ?? snapshot?.volume
+      if (raw == null) return 1
+      return snapVolume(raw)
+    }
+
     function enabledOf(form) {
       const snapshot = snapshotOf(form)
       if (!snapshot) return true
@@ -226,6 +247,15 @@ window.__ModuleLoader__.load({
         fallback: 1,
         snap: snapSpeakingRate,
         key: 'speakingRate',
+      })
+    }
+
+    function useVolume(form) {
+      return useVolatileNumber(form, {
+        read: volumeFrom,
+        fallback: 1,
+        snap: snapVolume,
+        key: 'volume',
       })
     }
 
@@ -305,6 +335,19 @@ window.__ModuleLoader__.load({
       })
     }
 
+    function VolumeSlider({ value, onChange }) {
+      const fill = `${((value - VOLUME_MIN) / (VOLUME_MAX - VOLUME_MIN)) * 100}%`
+      return React.createElement(RangeSlider, {
+        value,
+        min: VOLUME_MIN,
+        max: VOLUME_MAX,
+        step: VOLUME_STEP,
+        fill,
+        label: '音量',
+        onChange,
+      })
+    }
+
     function MinSpokenSlider({ value, onChange }) {
       const fill = `${((value - SPOKEN_MIN) / (SPOKEN_MAX - SPOKEN_MIN)) * 100}%`
       return React.createElement(RangeSlider, {
@@ -327,20 +370,25 @@ window.__ModuleLoader__.load({
       }, speech.shown ? '关闭播报' : '打开播报')
     }
 
-    function RateBody({ rate, minSpoken, speech }) {
+    function RateBody({ rate, volume, minSpoken, speech }) {
       return React.createElement(React.Fragment, null,
+        React.createElement('div', { className: 'shorekeeper-rate-actions' },
+          React.createElement('div', { className: 'shorekeeper-rate-row-label' }, '播报'),
+          React.createElement(SpeechButton, { speech }),
+        ),
+        React.createElement('div', { className: 'shorekeeper-rate-row' },
+          React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `音量 ${volume.shown.toFixed(1)}`),
+          React.createElement(VolumeSlider, { value: volume.shown, onChange: volume.commit }),
+        ),
         React.createElement('div', { className: 'shorekeeper-rate-row' },
           React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `语速 ${rate.shown.toFixed(1)}x`),
-          React.createElement('div', { className: 'shorekeeper-rate-actions' },
-            React.createElement(RateSlider, { value: rate.shown, onChange: rate.commit }),
-            React.createElement(SpeechButton, { speech }),
-          ),
+          React.createElement(RateSlider, { value: rate.shown, onChange: rate.commit }),
         ),
         React.createElement('div', { className: 'shorekeeper-rate-row' },
           React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `起送 ${minSpoken.shown} 字`),
           React.createElement(MinSpokenSlider, { value: minSpoken.shown, onChange: minSpoken.commit }),
         ),
-        rate.failed || minSpoken.failed || speech.failed
+        rate.failed || volume.failed || minSpoken.failed || speech.failed
           ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存')
           : null,
       )
@@ -349,6 +397,7 @@ window.__ModuleLoader__.load({
     function DockRate({ forms }) {
       const form = useEntryForm(forms)
       const rate = useSpeakingRate(form)
+      const volume = useVolume(form)
       const minSpoken = useMinSpoken(form)
       const speech = useSpeechEnabled(form)
       const openState = React.useState(false)
@@ -399,7 +448,7 @@ window.__ModuleLoader__.load({
           document.removeEventListener('keydown', onKey)
           document.removeEventListener('pointerdown', onPointer)
         }
-      }, [open, rate.failed, minSpoken.failed, speech.failed, updatePlace])
+      }, [open, rate.failed, volume.failed, minSpoken.failed, speech.failed, updatePlace])
 
       const label = React.createElement('button', {
         ref: labelRef,
@@ -415,7 +464,7 @@ window.__ModuleLoader__.load({
           className: 'shorekeeper-rate-pop',
           style: { top: `${place.top}px`, left: `${place.left}px` },
         },
-        React.createElement(RateBody, { rate, minSpoken, speech }),
+        React.createElement(RateBody, { rate, volume, minSpoken, speech }),
         ), document.body)
         : null
 
@@ -425,11 +474,12 @@ window.__ModuleLoader__.load({
     function ConfigRate({ forms }) {
       const form = useEntryForm(forms)
       const rate = useSpeakingRate(form)
+      const volume = useVolume(form)
       const minSpoken = useMinSpoken(form)
       const speech = useSpeechEnabled(form)
       return React.createElement('div', { className: 'shorekeeper-rate-config' },
-        React.createElement('div', { className: 'shorekeeper-rate-summary' }, '语速 0.8x–1.5x · 起送 20–50 字'),
-        React.createElement(RateBody, { rate, minSpoken, speech }),
+        React.createElement('div', { className: 'shorekeeper-rate-summary' }, '语速 0.8x–1.5x · 音量 0–1 · 起送 20–50 字'),
+        React.createElement(RateBody, { rate, volume, minSpoken, speech }),
       )
     }
 
