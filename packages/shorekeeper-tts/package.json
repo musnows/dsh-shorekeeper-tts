@@ -15,7 +15,8 @@
     "plugin.mjs",
     "client.js",
     "stop-hotkey.swift",
-    "locale"
+    "locale",
+    "realtime-demo"
   ],
   "dsh": {
     "client": {
