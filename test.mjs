@@ -370,6 +370,7 @@ test('turning speech off stops playback and drops later sentences', async () => 
   assert.equal(speechEnabledOf(undefined), true)
   assert.equal(Config({}).enabled.get(), true)
   assert.equal(Config({ enabled: false }).enabled.get(), false)
+  assert.equal(Config({}).inputGate.get(), 0.012)
 
   let enabled = true
   const synthesized = []
@@ -422,6 +423,7 @@ test('sends the Shorekeeper voice and normal speaking rate to Inworld', async ()
     audio_config: { audio_encoding: 'MP3', speaking_rate: 1 },
     delivery_mode: 'BALANCED',
     language: 'AUTO',
+    synthesis_context: { reasoning: 'REASONING_ON' },
   })
 })
 
@@ -533,12 +535,17 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   const client = readFileSync(new URL('./packages/shorekeeper-tts/client.js', import.meta.url), 'utf8')
   assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
   assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
-  assert.equal(client.includes('shorekeeper-speaking-rate-v6'), true)
+  assert.equal(client.includes('shorekeeper-speaking-rate-v11'), true)
   assert.equal(client.includes('语速 0.8x–1.5x · 音量 0–1 · 起送 20–50 字'), true)
   assert.equal(client.includes('音量'), true)
   assert.equal(client.includes('起送字数'), true)
   assert.equal(client.includes('minSpoken'), true)
   assert.equal(client.includes('关闭播报'), true)
+  assert.equal(client.includes('语音播报'), true)
+  assert.equal(client.includes('桌面宠物'), true)
+  assert.equal(client.includes('收音'), true)
+  assert.equal(client.includes('麦克风'), true)
+  assert.equal(client.includes("role: 'switch'"), true)
   assert.equal(client.includes("id: 'shorekeeper-speak'"), true)
   assert.equal(client.includes('conversation.chat.assistant-actions'), true)
   assert.equal(client.includes('语音重播'), true)

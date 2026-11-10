@@ -15,8 +15,12 @@ window.__ModuleLoader__.load({
     const VOLUME_MIN = 0
     const VOLUME_MAX = 1
     const VOLUME_STEP = 0.1
+    const GATE_MIN = 0
+    const GATE_MAX = 0.08
+    const GATE_STEP = 0.001
+    const GATE_DEFAULT = 0.012
     const ENTRY_ID = '守岸人语音'
-    const STYLE_ID = 'shorekeeper-speaking-rate-v6'
+    const STYLE_ID = 'shorekeeper-speaking-rate-v11'
     const SPEAK_CHANNEL = '/shorekeeper-tts'
 
     function snapSpeakingRate(value) {
@@ -56,13 +60,13 @@ window.__ModuleLoader__.load({
       style.textContent = [
         '.shorekeeper-rate-label{appearance:none;-webkit-appearance:none;background:transparent;border:0;box-shadow:none;padding:0;margin:0;font-family:inherit;font-weight:inherit;font-size:var(--dsh-content-font-size-secondary);line-height:inherit;color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
         '.shorekeeper-rate-label:hover,.shorekeeper-rate-label:focus,.shorekeeper-rate-label:active{background:transparent;border:0;box-shadow:none;outline:none;}',
-        '.shorekeeper-rate{appearance:none;-webkit-appearance:none;width:148px;height:16px;margin:0;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
+        '.shorekeeper-rate{appearance:none;-webkit-appearance:none;width:208px;height:16px;margin:0;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
         '.shorekeeper-rate:focus{outline:none;}',
         '.shorekeeper-rate::-webkit-slider-runnable-track{height:2px;border-radius:1px;background:linear-gradient(to right,currentColor 0,currentColor var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) 100%);}',
         '.shorekeeper-rate::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:8px;height:8px;margin-top:-3px;border:0;border-radius:50%;background:currentColor;}',
         '.shorekeeper-rate::-moz-range-track{height:2px;border:0;border-radius:1px;background:linear-gradient(to right,currentColor 0,currentColor var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) 100%);}',
         '.shorekeeper-rate::-moz-range-thumb{width:8px;height:8px;border:0;border-radius:50%;background:currentColor;}',
-        '.shorekeeper-rate-pop{position:fixed;z-index:80;box-sizing:border-box;min-width:196px;padding:10px 12px;border-radius:8px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-tertiary);}',
+        '.shorekeeper-rate-pop{position:fixed;z-index:80;box-sizing:border-box;width:max-content;min-width:232px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;border-radius:8px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-tertiary);}',
         '.shorekeeper-rate-actions{display:flex;align-items:center;gap:12px;}',
         '.shorekeeper-rate-row{display:flex;flex-direction:column;align-items:stretch;gap:6px;}',
         '.shorekeeper-rate-row-label{font-size:var(--dsh-content-font-size-secondary);color:var(--dsw-alias-label-tertiary);}',
@@ -76,6 +80,15 @@ window.__ModuleLoader__.load({
         '.shorekeeper-speak-action svg{width:calc(15px + var(--dsh-content-font-delta,0px));height:calc(15px + var(--dsh-content-font-delta,0px));display:block;}',
         '.shorekeeper-speak-action[data-busy="true"]{color:var(--dsw-alias-label-secondary);}',
         '.shorekeeper-speak-action[data-error="true"]{color:var(--dsw-alias-status-danger, #d94c4c);}',
+        '.shorekeeper-rate-divider{height:1px;margin:2px 0;background:var(--dsw-alias-border-l3);}',
+        '.shorekeeper-switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}',
+        '.shorekeeper-switch{position:relative;width:28px;height:16px;flex:0 0 auto;border:0;border-radius:8px;padding:0;background:var(--dsw-alias-border-l3);cursor:pointer;}',
+        '.shorekeeper-switch[aria-checked="true"]{background:currentColor;}',
+        '.shorekeeper-switch-knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dsw-specific-menu,#fff);}',
+        '.shorekeeper-switch[aria-checked="true"] .shorekeeper-switch-knob{left:14px;}',
+        '.shorekeeper-mic{position:relative;height:4px;border-radius:2px;background:var(--dsw-alias-border-l3);overflow:hidden;}',
+        '.shorekeeper-mic-level{position:absolute;left:0;top:0;bottom:0;background:currentColor;}',
+        '.shorekeeper-mic-mark{position:absolute;top:-2px;bottom:-2px;width:1px;background:currentColor;}',
       ].join('')
       document.head.appendChild(style)
     }
@@ -181,6 +194,24 @@ window.__ModuleLoader__.load({
       return raw !== false
     }
 
+    function snapGate(value) {
+      const number = typeof value === 'number' ? value : Number(value)
+      if (!Number.isFinite(number)) return GATE_DEFAULT
+      const steps = Math.round((number - GATE_MIN) / GATE_STEP)
+      const snapped = Math.round((GATE_MIN + steps * GATE_STEP) * 1000) / 1000
+      if (snapped < GATE_MIN) return GATE_MIN
+      if (snapped > GATE_MAX) return GATE_MAX
+      return snapped
+    }
+
+    function gateFrom(form) {
+      const snapshot = snapshotOf(form)
+      if (!snapshot) return GATE_DEFAULT
+      const raw = snapshot?.value?.inputGate ?? snapshot?.inputGate
+      if (raw == null) return GATE_DEFAULT
+      return snapGate(raw)
+    }
+
     function subscribeForm(form, listener) {
       if (!form) return () => {}
       if (typeof form.subscribe === 'function') {
@@ -265,6 +296,15 @@ window.__ModuleLoader__.load({
         fallback: SPOKEN_DEFAULT,
         snap: snapMinSpoken,
         key: 'minSpoken',
+      })
+    }
+
+    function useInputGate(form) {
+      return useVolatileNumber(form, {
+        read: gateFrom,
+        fallback: GATE_DEFAULT,
+        snap: snapGate,
+        key: 'inputGate',
       })
     }
 
@@ -361,25 +401,108 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function SpeechButton({ speech }) {
+    function ToggleSwitch({ on, label, onToggle }) {
       return React.createElement('button', {
         type: 'button',
-        className: 'shorekeeper-rate-stop',
-        'aria-pressed': !speech.shown,
-        onClick() { speech.commit(!speech.shown) },
-      }, speech.shown ? '关闭播报' : '打开播报')
+        className: 'shorekeeper-switch',
+        role: 'switch',
+        'aria-checked': on,
+        'aria-label': label,
+        onClick() { onToggle() },
+      }, React.createElement('span', { className: 'shorekeeper-switch-knob' }))
     }
 
-    function RateBody({ rate, volume, minSpoken, speech }) {
+    function SwitchRow({ title, on, label, onToggle }) {
+      return React.createElement('div', { className: 'shorekeeper-switch-row' },
+        React.createElement('div', { className: 'shorekeeper-rate-row-label' }, title),
+        React.createElement(ToggleSwitch, { on, label, onToggle }),
+      )
+    }
+
+    async function callPet(connection, payload) {
+      const rpc = connection?.rpc
+      if (!rpc?.call) throw new Error('连接不可用')
+      const result = await rpc.call(SPEAK_CHANNEL, 'pet', payload ?? {})
+      if (!result?.ok) throw new Error(result?.error?.message || '桌宠没有打开')
+      return result.value && typeof result.value === 'object' ? result.value : result
+    }
+
+    function usePet(connection, watch) {
+      const statePair = React.useState({ enabled: false, error: '' })
+      const state = statePair[0]
+      const setState = statePair[1]
+      React.useEffect(() => {
+        if (!watch) return undefined
+        let stopped = false
+        async function poll() {
+          try {
+            const body = await callPet(connection, {})
+            if (!stopped) setState({ enabled: body.enabled === true, error: '' })
+          } catch (caught) {
+            if (stopped) return
+            const message = caught instanceof Error ? caught.message : '桌宠没有打开'
+            setState(current => ({ ...current, error: message }))
+          }
+        }
+        void poll()
+        const timer = setInterval(() => { void poll() }, 1500)
+        return () => {
+          stopped = true
+          clearInterval(timer)
+        }
+      }, [connection, watch])
+
+      async function setEnabled(next) {
+        setState(current => ({ ...current, enabled: next, error: '' }))
+        try {
+          const body = await callPet(connection, { enabled: next })
+          setState({ enabled: body.enabled === true, error: '' })
+        } catch (caught) {
+          const message = caught instanceof Error ? caught.message : '桌宠没有打开'
+          setState(current => ({ enabled: !next, error: message }))
+        }
+      }
+
+      return { enabled: state.enabled, error: state.error, setEnabled }
+    }
+
+    function useMicLevel(connection, on) {
+      const levelState = React.useState(0)
+      const level = levelState[0]
+      const setLevel = levelState[1]
+      React.useEffect(() => {
+        if (!on) {
+          setLevel(0)
+          return undefined
+        }
+        let stopped = false
+        async function tick() {
+          while (!stopped) {
+            try {
+              const body = await callPet(connection, {})
+              if (!stopped) setLevel(Number(body.level) || 0)
+            } catch {
+              if (!stopped) setLevel(0)
+            }
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+        }
+        void tick()
+        return () => { stopped = true }
+      }, [connection, on])
+      return level
+    }
+
+    function RateBody({ rate, volume, minSpoken, speech, gate, pet, level }) {
+      const saveFailed = rate.failed || volume.failed || minSpoken.failed || gate.failed || speech.failed
+      const gateFill = `${((gate.shown - GATE_MIN) / (GATE_MAX - GATE_MIN)) * 100}%`
       return React.createElement(React.Fragment, null,
-        React.createElement('div', { className: 'shorekeeper-rate-actions' },
-          React.createElement('div', { className: 'shorekeeper-rate-row-label' }, '播报'),
-          React.createElement(SpeechButton, { speech }),
-        ),
-        React.createElement('div', { className: 'shorekeeper-rate-row' },
-          React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `音量 ${volume.shown.toFixed(1)}`),
-          React.createElement(VolumeSlider, { value: volume.shown, onChange: volume.commit }),
-        ),
+        React.createElement(SwitchRow, {
+          title: '语音播报',
+          on: speech.shown,
+          label: speech.shown ? '关闭播报' : '打开播报',
+          onToggle() { speech.commit(!speech.shown) },
+        }),
         React.createElement('div', { className: 'shorekeeper-rate-row' },
           React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `语速 ${rate.shown.toFixed(1)}x`),
           React.createElement(RateSlider, { value: rate.shown, onChange: rate.commit }),
@@ -388,21 +511,63 @@ window.__ModuleLoader__.load({
           React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `起送 ${minSpoken.shown} 字`),
           React.createElement(MinSpokenSlider, { value: minSpoken.shown, onChange: minSpoken.commit }),
         ),
-        rate.failed || volume.failed || minSpoken.failed || speech.failed
-          ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存')
+        React.createElement('div', { className: 'shorekeeper-rate-row' },
+          React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `音量 ${volume.shown.toFixed(1)}`),
+          React.createElement(VolumeSlider, { value: volume.shown, onChange: volume.commit }),
+        ),
+        React.createElement('div', { className: 'shorekeeper-rate-divider' }),
+        React.createElement(SwitchRow, {
+          title: '桌面宠物',
+          on: pet.enabled,
+          label: pet.enabled ? '关闭桌宠' : '打开桌宠',
+          onToggle() { void pet.setEnabled(!pet.enabled) },
+        }),
+        pet.enabled
+          ? React.createElement(React.Fragment, null,
+            React.createElement('div', { className: 'shorekeeper-rate-row' },
+              React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `收音 ${Math.round(gate.shown / GATE_MAX * 100)}%`),
+              React.createElement(RangeSlider, {
+                value: gate.shown,
+                min: GATE_MIN,
+                max: GATE_MAX,
+                step: GATE_STEP,
+                fill: gateFill,
+                label: '收音',
+                onChange: gate.commit,
+              }),
+            ),
+            React.createElement('div', { className: 'shorekeeper-rate-row' },
+              React.createElement('div', { className: 'shorekeeper-rate-row-label' }, '麦克风'),
+              React.createElement('div', { className: 'shorekeeper-mic', 'aria-label': '麦克风' },
+                React.createElement('div', {
+                  className: 'shorekeeper-mic-level',
+                  style: { width: `${Math.min(100, level / GATE_MAX * 100)}%` },
+                }),
+                React.createElement('div', {
+                  className: 'shorekeeper-mic-mark',
+                  style: { left: `${Math.min(100, gate.shown / GATE_MAX * 100)}%` },
+                }),
+              ),
+            ),
+          )
           : null,
+        saveFailed ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存') : null,
+        pet.error ? React.createElement('div', { className: 'shorekeeper-rate-error' }, pet.error) : null,
       )
     }
 
-    function DockRate({ forms }) {
+    function DockRate({ forms, connection }) {
       const form = useEntryForm(forms)
       const rate = useSpeakingRate(form)
       const volume = useVolume(form)
       const minSpoken = useMinSpoken(form)
       const speech = useSpeechEnabled(form)
+      const gate = useInputGate(form)
       const openState = React.useState(false)
       const open = openState[0]
       const setOpen = openState[1]
+      const pet = usePet(connection, open)
+      const level = useMicLevel(connection, open && pet.enabled)
       const labelRef = React.useRef(null)
       const popRef = React.useRef(null)
       const placeState = React.useState({ top: 0, left: 0 })
@@ -419,16 +584,21 @@ window.__ModuleLoader__.load({
         const height = pop.offsetHeight
         let top = rect.top - margin - height
         if (top < margin) top = rect.bottom + margin
+        const maxTop = window.innerHeight - height - margin
+        if (top > maxTop) top = Math.max(margin, maxTop)
         let left = rect.left + (rect.width - width) / 2
         const maxLeft = window.innerWidth - width - margin
         if (left < margin) left = margin
         if (left > maxLeft) left = Math.max(margin, maxLeft)
-        setPlace({ top, left })
+        setPlace(current => (current.top === top && current.left === left ? current : { top, left }))
       }, [])
 
       React.useLayoutEffect(() => {
         if (!open) return undefined
         updatePlace()
+        const pop = popRef.current
+        const observer = typeof ResizeObserver === 'function' && pop ? new ResizeObserver(() => updatePlace()) : null
+        if (observer && pop) observer.observe(pop)
         const onScroll = () => updatePlace()
         const onKey = event => {
           if (event.key === 'Escape') setOpen(false)
@@ -443,12 +613,13 @@ window.__ModuleLoader__.load({
         document.addEventListener('keydown', onKey)
         document.addEventListener('pointerdown', onPointer)
         return () => {
+          observer?.disconnect()
           window.removeEventListener('resize', onScroll)
           window.removeEventListener('scroll', onScroll, true)
           document.removeEventListener('keydown', onKey)
           document.removeEventListener('pointerdown', onPointer)
         }
-      }, [open, rate.failed, volume.failed, minSpoken.failed, speech.failed, updatePlace])
+      }, [open, rate.failed, volume.failed, minSpoken.failed, gate.failed, speech.failed, pet.enabled, pet.error, updatePlace])
 
       const label = React.createElement('button', {
         ref: labelRef,
@@ -464,22 +635,25 @@ window.__ModuleLoader__.load({
           className: 'shorekeeper-rate-pop',
           style: { top: `${place.top}px`, left: `${place.left}px` },
         },
-        React.createElement(RateBody, { rate, volume, minSpoken, speech }),
+        React.createElement(RateBody, { rate, volume, minSpoken, speech, gate, pet, level }),
         ), document.body)
         : null
 
       return React.createElement(React.Fragment, null, label, pop)
     }
 
-    function ConfigRate({ forms }) {
+    function ConfigRate({ forms, connection }) {
       const form = useEntryForm(forms)
       const rate = useSpeakingRate(form)
       const volume = useVolume(form)
       const minSpoken = useMinSpoken(form)
       const speech = useSpeechEnabled(form)
+      const gate = useInputGate(form)
+      const pet = usePet(connection, true)
+      const level = useMicLevel(connection, pet.enabled)
       return React.createElement('div', { className: 'shorekeeper-rate-config' },
         React.createElement('div', { className: 'shorekeeper-rate-summary' }, '语速 0.8x–1.5x · 音量 0–1 · 起送 20–50 字'),
-        React.createElement(RateBody, { rate, volume, minSpoken, speech }),
+        React.createElement(RateBody, { rate, volume, minSpoken, speech, gate, pet, level }),
       )
     }
 
@@ -487,16 +661,17 @@ window.__ModuleLoader__.load({
       ensureStyles()
       const slots = ctx.slots ?? ctx.get?.('slots')
       const forms = ctx.configForms ?? ctx.get?.('configForms')
+      const connection = ctx.connection ?? ctx.get?.('connection')
       if (!slots) return
       slots.inject('conversation.composer.dock', () => slots.register({
         name: 'conversation.composer.dock',
         id: 'shorekeeper-speaking-rate',
         order: 40,
-      }, () => React.createElement(DockRate, { forms })))
+      }, () => React.createElement(DockRate, { forms, connection })))
       slots.inject('plugins.row.config', () => slots.register({
         name: 'plugins.row.config',
         key: '@dsh-local/shorekeeper-tts#守岸人语音',
-      }, () => React.createElement(ConfigRate, { forms })))
+      }, () => React.createElement(ConfigRate, { forms, connection })))
       slots.inject('conversation.chat.assistant-actions', () => slots.register({
         name: 'conversation.chat.assistant-actions',
         id: 'shorekeeper-speak',

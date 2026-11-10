@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>守岸人实时语音</title>
+  <style>
+    body { margin: 24px; font-family: "Hiragino Sans GB", "PingFang SC", sans-serif; color: #123; }
+    button { font: inherit; }
+    #log { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <button id="stop" type="button">打断</button>
+  <div id="log"></div>
+  <script>
+    const log = document.getElementById('log')
+    const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)
+    let rate = 24000
+    let queue = Promise.resolve()
+    let context
+    socket.addEventListener('message', event => {
+      const message = JSON.parse(event.data)
+      if (message.type === 'ready') rate = Number(message.rate) || rate
+      if (message.type === 'caption') log.textContent += `${message.role === 'you' ? '你' : '她'}：${message.text}\n`
+      if (message.type === 'error') log.textContent += `${message.message}\n`
+      if (message.type === 'audio') play(message.pcm)
+      if (message.type === 'interrupt') stop()
+    })
+    function stop() {
+      context?.close()
+      context = null
+      queue = Promise.resolve()
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'cut' }))
+    }
+    document.getElementById('stop').onclick = stop
+    function play(pcm) {
+      const binary = atob(pcm)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+      const samples = new Float32Array(bytes.length / 2)
+      const view = new DataView(bytes.buffer)
+      for (let i = 0; i < samples.length; i += 1) samples[i] = view.getInt16(i * 2, true) / 0x8000
+      context ??= new AudioContext({ sampleRate: rate })
+      const buffer = context.createBuffer(1, samples.length, rate)
+      buffer.copyToChannel(samples, 0)
+      queue = queue.then(() => new Promise(resolve => {
+        const source = context.createBufferSource()
+        source.buffer = buffer
+        source.connect(context.destination)
+        source.onended = resolve
+        source.start()
+      }))
+    }
+    navigator.mediaDevices?.getUserMedia({ audio: true }).then(stream => {
+      const audio = new AudioContext()
+      const source = audio.createMediaStreamSource(stream)
+      const node = audio.createScriptProcessor(2048, 1, 1)
+      node.onaudioprocess = event => {
+        const input = event.inputBuffer.getChannelData(0)
+        const ratio = audio.sampleRate / rate
+        const length = Math.floor(input.length / ratio)
+        const bytes = new DataView(new ArrayBuffer(length * 2))
+        for (let i = 0; i < length; i += 1) {
+          const sample = Math.max(-1, Math.min(1, input[Math.floor(i * ratio)]))
+          bytes.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+        }
+        let binary = ''
+        for (const value of new Uint8Array(bytes.buffer)) binary += String.fromCharCode(value)
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'audio', pcm: btoa(binary) }))
+      }
+      source.connect(node)
+      node.connect(audio.destination)
+    })
+  </script>
+</body>
+</html>

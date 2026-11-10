@@ -1,8 +1,9 @@
-import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { unlink, writeFile } from 'node:fs/promises'
+import { createConnection } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Schema from '@deepseek-ai/schemastery'
 
@@ -26,11 +27,18 @@ const VOLUME_MIN = 0
 const VOLUME_MAX = 1
 const VOLUME_STEP = 0.1
 
+const GATE_MIN = 0
+const GATE_MAX = 0.08
+const GATE_STEP = 0.001
+const GATE_DEFAULT = 0.012
+const PET_PORT = 18766
+
 export const Config = Schema.object({
   speakingRate: Schema.number().min(RATE_MIN).max(RATE_MAX).step(RATE_STEP).default(1).volatile(),
   minSpoken: Schema.number().min(SPOKEN_MIN).max(SPOKEN_MAX).step(SPOKEN_STEP).default(SPOKEN_DEFAULT).volatile(),
   volume: Schema.number().min(VOLUME_MIN).max(VOLUME_MAX).step(VOLUME_STEP).default(1).volatile(),
   enabled: Schema.boolean().default(true).volatile(),
+  inputGate: Schema.number().min(GATE_MIN).max(GATE_MAX).step(GATE_STEP).default(GATE_DEFAULT).volatile(),
 })
 
 export function snapSpeakingRate(value) {
@@ -85,6 +93,22 @@ export function volumeOf(config) {
   const read = config?.volume?.get
   if (typeof read !== 'function') return 1
   return snapVolume(read.call(config.volume))
+}
+
+export function snapInputGate(value) {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number)) return GATE_DEFAULT
+  const steps = Math.round((number - GATE_MIN) / GATE_STEP)
+  const snapped = Math.round((GATE_MIN + steps * GATE_STEP) * 1000) / 1000
+  if (snapped < GATE_MIN) return GATE_MIN
+  if (snapped > GATE_MAX) return GATE_MAX
+  return snapped
+}
+
+export function inputGateOf(config) {
+  const read = config?.inputGate?.get
+  if (typeof read !== 'function') return GATE_DEFAULT
+  return snapInputGate(read.call(config.inputGate))
 }
 
 export function afplayArgs(audioPath, volume) {
@@ -277,6 +301,7 @@ export async function synthesize(text, apiKey, fetchImpl = fetch, options = {}) 
       audio_config: { audio_encoding: 'MP3', speaking_rate: speakingRate },
       delivery_mode: 'BALANCED',
       language: 'AUTO',
+      synthesis_context: { reasoning: 'REASONING_ON' },
     }),
   })
 
@@ -429,6 +454,183 @@ function frameOf(payload, second) {
 }
 
 const SPEAK_CHANNEL = '/shorekeeper-tts'
+const PET_APP_MARK = 'MacOS/ShorekeeperPet'
+
+let petStartedByPlugin = false
+let closingPet = false
+
+function petStatePath() {
+  return join(homedir(), '.dsh', 'shorekeeper-pet-open')
+}
+
+function writePetWanted(wanted) {
+  try {
+    writeFileSync(petStatePath(), wanted ? '1' : '0')
+  } catch {
+    // A missing home directory should not take the voice plugin down.
+  }
+}
+
+function petWanted() {
+  try {
+    return readFileSync(petStatePath(), 'utf8').trim() === '1'
+  } catch {
+    return false
+  }
+}
+
+export function petRoot() {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    join(here, '../../realtime-demo'),
+    join(homedir(), '.worktree/bc6aceed/dsh-shorekeeper-tts/realtime-demo'),
+    join(homedir(), 'Projects/dsh-shorekeeper-tts/realtime-demo'),
+  ]
+  return candidates.find(dir => existsSync(join(dir, 'launch-pet.mjs'))) ?? null
+}
+
+function nodeBinary() {
+  if (existsSync('/opt/homebrew/bin/node')) return '/opt/homebrew/bin/node'
+  if (existsSync('/usr/local/bin/node')) return '/usr/local/bin/node'
+  return process.execPath
+}
+
+function portOpen(port) {
+  return new Promise(resolve => {
+    const socket = createConnection({ host: '127.0.0.1', port }, () => {
+      socket.end()
+      resolve(true)
+    })
+    socket.once('error', () => resolve(false))
+  })
+}
+
+function pidsMatching(args) {
+  const result = spawnSync('pgrep', args, { encoding: 'utf8' })
+  if (result.status !== 0) return []
+  return String(result.stdout).split(/\s+/).map(item => Number(item)).filter(pid => pid > 0)
+}
+
+function signalPids(pids) {
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
+  }
+}
+
+function petWindowPids() {
+  return pidsMatching(['-f', PET_APP_MARK])
+}
+
+function listenerPids() {
+  const result = spawnSync('lsof', ['-nP', `-iTCP:${PET_PORT}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+  if (result.status !== 0) return []
+  return String(result.stdout).split(/\s+/).map(item => Number(item)).filter(pid => pid > 0)
+}
+
+export async function pushInputGate(value) {
+  try {
+    await fetch(`http://127.0.0.1:${PET_PORT}/gate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: snapInputGate(value) }),
+    })
+  } catch {
+    // The pet server is optional until the switch is on.
+  }
+}
+
+export async function petLevel() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${PET_PORT}/level`)
+    if (!response.ok) return 0
+    const body = await response.json()
+    const level = Number(body?.value)
+    return Number.isFinite(level) ? level : 0
+  } catch {
+    return 0
+  }
+}
+
+async function ensurePetServer(root) {
+  if (await portOpen(PET_PORT)) return true
+  const logPath = join(homedir(), '.dsh', 'shorekeeper-voice.log')
+  let logFd = 'ignore'
+  try { logFd = openSync(logPath, 'a') } catch { logFd = 'ignore' }
+  const env = {
+    ...process.env,
+    PORT: String(PET_PORT),
+    PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
+  }
+  delete env.ELECTRON_RUN_AS_NODE
+  const child = spawn(nodeBinary(), ['server.mjs'], {
+    cwd: root,
+    env,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  })
+  child.unref()
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+    if (await portOpen(PET_PORT)) return true
+  }
+  return false
+}
+
+function rpcResult(result) {
+  if (result && typeof result === 'object' && result.ok === false) {
+    const error = result.error && typeof result.error === 'object' ? result.error : {}
+    return {
+      ok: false,
+      error: {
+        code: typeof error.code === 'string' ? error.code : 'failed',
+        message: typeof error.message === 'string' ? error.message : '失败',
+        details: error.details && typeof error.details === 'object' && !Array.isArray(error.details) ? error.details : {},
+      },
+    }
+  }
+  if (result && typeof result === 'object' && result.ok === true) return result
+  return { ok: true, value: result }
+}
+
+export async function startPet(gate = GATE_DEFAULT) {
+  closingPet = false
+  const root = petRoot()
+  if (!root) return { ok: false, error: { code: 'not-found', message: '找不到桌宠。' } }
+  const app = join(root, 'mac', 'ShorekeeperPet.app')
+  if (!existsSync(join(app, 'Contents', 'MacOS', 'ShorekeeperPet'))) {
+    return { ok: false, error: { code: 'not-found', message: '桌宠程序不存在。' } }
+  }
+  const up = await ensurePetServer(root)
+  if (!up) return { ok: false, error: { code: 'unavailable', message: '语音服务没有起来。' } }
+  if (petWindowPids().length === 0) {
+    const opener = existsSync('/usr/bin/open') ? '/usr/bin/open' : 'open'
+    const opened = spawnSync(opener, ['-n', '--env', `PET_PORT=${PET_PORT}`, app], { encoding: 'utf8' })
+    if (opened.status !== 0) {
+      return { ok: false, error: { code: 'failed', message: '桌宠没有打开。' } }
+    }
+  }
+  writePetWanted(true)
+  petStartedByPlugin = true
+  await pushInputGate(gate)
+  return { ok: true, value: { enabled: true } }
+}
+
+export async function stopPet() {
+  closingPet = true
+  writePetWanted(false)
+  signalPids(petWindowPids())
+  signalPids(listenerPids())
+  return { ok: true, value: { enabled: false } }
+}
+
+export function closePetWithHost() {
+  if (!petStartedByPlugin || closingPet) return
+  closingPet = true
+  const alive = petWindowPids().length > 0
+  writePetWanted(alive)
+  signalPids(petWindowPids())
+  signalPids(listenerPids())
+}
 
 export function createShorekeeperTtsPlugin({
   getApiKey = () => loadInworldApiKey(),
@@ -490,9 +692,12 @@ export function createShorekeeperTtsPlugin({
       return null
     }
 
+    const publishGate = () => { void pushInputGate(inputGateOf(config)) }
     ctx.on?.('loader/volatile-update', () => {
       if (!speechEnabledOf(config)) stop()
+      publishGate()
     })
+    publishGate()
 
     ctx.on('agent/assistant-stream', (payload, second) => {
       const frame = frameOf(payload, second)
@@ -545,19 +750,24 @@ export function createShorekeeperTtsPlugin({
             return
           }
           const remove = connection.rpc.handle(SPEAK_CHANNEL, async (endpoint, payload) => {
+            if (endpoint === 'pet') {
+              if (payload?.enabled === true) return rpcResult(await startPet(inputGateOf(config)))
+              if (payload?.enabled === false) return rpcResult(stopPet())
+              return rpcResult({ ok: true, value: { enabled: petWindowPids().length > 0, level: await petLevel() } })
+            }
             if (endpoint !== 'speak') {
-              return { ok: false, error: { message: `unknown endpoint: ${String(endpoint)}` } }
+              return rpcResult({ ok: false, error: { code: 'unknown', message: `unknown endpoint: ${String(endpoint)}` } })
             }
             const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
             const messageId = typeof payload?.messageId === 'string' ? payload.messageId : ''
             const directText = typeof payload?.text === 'string' ? payload.text.trim() : ''
-            if (directText) return speakFull(directText)
+            if (directText) return rpcResult(speakFull(directText))
             const found = lookupAssistantText(sessionId, messageId)
             if (!found) {
               console.error(`[dsh-shorekeeper-tts] message text not found session=${sessionId} message=${messageId}`)
-              return { ok: false, error: { message: '无法从会话记录提取这条消息的文本。' } }
+              return rpcResult({ ok: false, error: { code: 'not-found', message: '无法从会话记录提取这条消息的文本。' } })
             }
-            return speakFull(found.text)
+            return rpcResult(speakFull(found.text))
           })
           disposeRpc = typeof remove === 'function' ? remove : () => {}
           scope.on?.('dispose', () => {
@@ -567,9 +777,12 @@ export function createShorekeeperTtsPlugin({
           console.error(`[dsh-shorekeeper-tts] failed to register speak RPC: ${error instanceof Error ? error.message : String(error)}`)
         }
       })
+      if (petWanted()) void startPet(inputGateOf(config))
+      process.once('exit', closePetWithHost)
     }
 
     ctx.on?.('dispose', () => {
+      closePetWithHost()
       disposeHotkey()
       disposeRpc()
       if (typeof disposeCommand === 'function') disposeCommand()

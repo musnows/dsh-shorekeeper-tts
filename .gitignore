@@ -6,3 +6,4 @@ node_modules/
 *.wav
 *.pem
 *.key
+realtime-demo/mac/ShorekeeperPet.app/

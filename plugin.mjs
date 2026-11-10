@@ -17,6 +17,8 @@ export {
   speakingRateOf,
   speechEnabledOf,
   volumeOf,
+  inputGateOf,
+  snapInputGate,
   synthesize,
   visibleText,
 } from './packages/shorekeeper-tts/plugin.mjs'
