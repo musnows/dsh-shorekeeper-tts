@@ -246,12 +246,14 @@ function stopSpeaker() {
 function openSpeaker(rate) {
   const ffmpeg = ffmpegBin()
   if (!ffmpeg) return null
+  /* Do not hardcode -audio_device_index: device 0 is often a monitor /
+     virtual device, not the system default output the user is listening to. */
   const child = spawn(ffmpeg, [
     '-hide_banner', '-loglevel', 'error',
     '-fflags', 'nobuffer', '-flags', 'low_delay',
     '-f', 's16le', '-ar', String(rate), '-ac', '1',
     '-i', 'pipe:0',
-    '-f', 'audiotoolbox', '-audio_device_index', '0',
+    '-f', 'audiotoolbox',
     '-y', '/dev/null',
   ], { stdio: ['pipe', 'ignore', 'pipe'] })
   child.rate = rate
@@ -269,6 +271,10 @@ function openSpeaker(rate) {
 }
 
 function playSpeaker(base64, rate) {
+  /* Pet window already plays PCM through its native AudioQueue on the
+     system default device. Server-side ffmpeg is only a fallback when no
+     pet browser is attached (e.g. the plain / index page). */
+  if (petBrowsers.size > 0) return
   const audio = Buffer.from(base64, 'base64')
   if (audio.length === 0) return
   if (!speaker || speaker.exitCode != null || speaker.rate !== rate || !speaker.stdin?.writable) {

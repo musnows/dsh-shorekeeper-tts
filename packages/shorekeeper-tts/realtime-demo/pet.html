@@ -151,43 +151,48 @@
       renderPose()
     }
 
-    function playPcm(base64) {
-      if (dropAudio) return
-      const native = window.webkit?.messageHandlers?.pet
-      if (native) {
-        native.postMessage({ kind: 'audio', pcm: base64, rate: sampleRate })
-        const samples = atob(base64).length / 2
-        const now = performance.now()
-        speakUntil = Math.max(speakUntil, now) + samples / sampleRate * 1000
-        userSpeaking = false
-        thinking = false
-        renderPose()
-        clearTimeout(speakTimer)
-        speakTimer = setTimeout(renderPose, Math.max(0, speakUntil - performance.now()) + 40)
-        return
-      }
-      if (!audioContext) return
-      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0))
-      const view = new Int16Array(bytes.buffer)
-      const floats = new Float32Array(view.length)
-      for (let index = 0; index < view.length; index += 1) floats[index] = view[index] / 32768
-      const buffer = audioContext.createBuffer(1, floats.length, sampleRate)
-      buffer.copyToChannel(floats, 0)
-      const source = audioContext.createBufferSource()
-      source.buffer = buffer
-      source.connect(audioContext.destination)
-      const start = Math.max(audioContext.currentTime + 0.05, nextTime)
-      source.start(start)
-      nextTime = start + buffer.duration
-      sources.push(source)
+    function markSpeaking(seconds) {
+      const now = performance.now()
+      speakUntil = Math.max(speakUntil, now) + Math.max(0, seconds) * 1000
       userSpeaking = false
       thinking = false
       renderPose()
-      source.onended = () => {
-        sources = sources.filter(item => item !== source)
-        if (sources.length === 0 && !responseOpen) thinking = false
-        renderPose()
+      clearTimeout(speakTimer)
+      speakTimer = setTimeout(renderPose, Math.max(0, speakUntil - performance.now()) + 40)
+    }
+
+    function playPcm(base64) {
+      if (dropAudio) return
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0))
+      if (bytes.length < 2) return
+      /* Prefer Web Audio (already resumed after getUserMedia). Native AudioQueue
+         is a fallback only — if it fails silently we still get sound here. */
+      if (audioContext) {
+        const aligned = bytes.byteOffset % 2 === 0 ? bytes : Uint8Array.from(bytes)
+        const view = new Int16Array(aligned.buffer, aligned.byteOffset, Math.floor(aligned.byteLength / 2))
+        const floats = new Float32Array(view.length)
+        for (let index = 0; index < view.length; index += 1) floats[index] = view[index] / 32768
+        const buffer = audioContext.createBuffer(1, floats.length, sampleRate)
+        buffer.copyToChannel(floats, 0)
+        const source = audioContext.createBufferSource()
+        source.buffer = buffer
+        source.connect(audioContext.destination)
+        const start = Math.max(audioContext.currentTime + 0.05, nextTime)
+        source.start(start)
+        nextTime = start + buffer.duration
+        sources.push(source)
+        markSpeaking(buffer.duration)
+        source.onended = () => {
+          sources = sources.filter(item => item !== source)
+          if (sources.length === 0 && !responseOpen) thinking = false
+          renderPose()
+        }
+        return
       }
+      const native = window.webkit?.messageHandlers?.pet
+      if (!native) return
+      native.postMessage({ kind: 'audio', pcm: base64, rate: sampleRate })
+      markSpeaking((bytes.length / 2) / sampleRate)
     }
 
     function levelOf(samples) {
@@ -238,12 +243,15 @@
         lastLevel = level
         const now = performance.now()
         const playing = now < speakUntil
-        const loudEnough = level >= Math.max(gate * 3, 0.05)
+        /* While she is talking, require a clearly louder mic level before we
+           treat room/ headphone bleed as barge-in; otherwise Inworld VAD
+           interrupts her, captions still arrive, and the pet stays silent. */
+        const bargeIn = level >= Math.max(gate * 10, 0.15)
         if (now - lastLevelSent > 80) {
           lastLevelSent = now
           socket.send(JSON.stringify({ type: 'level', value: Math.round(level * 1000) / 1000 }))
         }
-        const pass = playing ? loudEnough : level >= gate
+        const pass = playing ? bargeIn : level >= gate
         const heard = pass ? input : new Float32Array(input.length)
         const pcm = downsample(heard, audioContext.sampleRate)
         socket.send(JSON.stringify({ type: 'audio', pcm }))
@@ -267,13 +275,20 @@
       }
       if (message.type === 'error') showBubble(message.message)
       if (message.type === 'interrupt') {
-        const echo = performance.now() < speakUntil && lastLevel < Math.max(gate * 3, 0.05)
-        if (!echo) {
-          userSpeaking = true
-          dropAudio = true
-          thinking = false
-          socket?.send(JSON.stringify({ type: 'cut' }))
-          stopPlayback()
+        userSpeaking = true
+        thinking = false
+        const playing = performance.now() < speakUntil
+        /* User speech_started must NOT arm dropAudio for the upcoming reply.
+           Old logic set dropAudio on every interrupt, so captions still arrived
+           at response end while every audio delta was discarded. Only barge-in
+           during her active turn should cut playback. */
+        if (playing || responseOpen) {
+          const bargeIn = lastLevel >= Math.max(gate * 10, 0.15)
+          if (bargeIn) {
+            dropAudio = true
+            socket?.send(JSON.stringify({ type: 'cut' }))
+            stopPlayback()
+          }
         }
       }
       if (message.type === 'listen-end') userSpeaking = false
@@ -289,6 +304,7 @@
       }
       if (message.type === 'response-started') {
         responseOpen = true
+        dropAudio = false
         thinking = true
         userSpeaking = false
       }
