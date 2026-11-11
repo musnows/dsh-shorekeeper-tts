@@ -20,6 +20,23 @@ const INSTRUCTIONS = [
   'send_message 只能继续工具返回的空闲 session id。桌面窗口里开着的会话通常不能从外面投递；若返回正在跑，先等再发或换 create_session。',
 ].join('')
 
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
+
+function formatLocalClock(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const weekday = WEEKDAYS[date.getDay()]
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${year}年${month}月${day}日星期${weekday} ${hour}:${minute}:${second}`
+}
+
+function instructionsWithFrozenClock(clockText) {
+  return `${INSTRUCTIONS}当前本机时间是${clockText}。这段时间信息只在会话开始时固定一次，之后不要自行改写。`
+}
+
 const TOOLS = [
   {
     type: 'function',
@@ -433,6 +450,15 @@ function serve() {
   const sockets = new WebSocketServer({ server, path: '/ws' })
   sockets.on('connection', browser => {
     let api
+    /* Snapshot local clock once for this realtime session; later session.update
+       calls must reuse the same instructions string. */
+    let frozenInstructions = null
+    const sessionUpdateOnce = () => {
+      if (!frozenInstructions) {
+        frozenInstructions = instructionsWithFrozenClock(formatLocalClock())
+      }
+      return sessionUpdate({ instructions: frozenInstructions })
+    }
     const send = event => {
       if (browser.readyState === WebSocket.OPEN) browser.send(JSON.stringify(event))
     }
@@ -456,7 +482,7 @@ function serve() {
       if (message.type === 'response.output_audio.delta' && typeof message.delta === 'string') {
         playSpeaker(message.delta, outputRate)
       }
-      if (message.type === 'session.created') api.send(JSON.stringify(sessionUpdate()))
+      if (message.type === 'session.created') api.send(JSON.stringify(sessionUpdateOnce()))
       const event = publicEvent(message)
       if (event) send(event)
     })
