@@ -92,8 +92,13 @@
     const bubble = document.querySelector('#bubble')
     const closeButton = document.querySelector('#close')
     const GATE_MAX = 0.08
+    const SILENCE_BEFORE_SEND_MS = 1000
     let gate = 0.012
     let lastLevelSent = 0
+    let voiced = false
+    let silentMs = 0
+    let lastProcessAt = 0
+    let commitPending = false
     const poses = {
       idle: '/sprites/idle.png?v=2',
       listen: '/sprites/listen.png?v=2',
@@ -151,43 +156,48 @@
       renderPose()
     }
 
-    function playPcm(base64) {
-      if (dropAudio) return
-      const native = window.webkit?.messageHandlers?.pet
-      if (native) {
-        native.postMessage({ kind: 'audio', pcm: base64, rate: sampleRate })
-        const samples = atob(base64).length / 2
-        const now = performance.now()
-        speakUntil = Math.max(speakUntil, now) + samples / sampleRate * 1000
-        userSpeaking = false
-        thinking = false
-        renderPose()
-        clearTimeout(speakTimer)
-        speakTimer = setTimeout(renderPose, Math.max(0, speakUntil - performance.now()) + 40)
-        return
-      }
-      if (!audioContext) return
-      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0))
-      const view = new Int16Array(bytes.buffer)
-      const floats = new Float32Array(view.length)
-      for (let index = 0; index < view.length; index += 1) floats[index] = view[index] / 32768
-      const buffer = audioContext.createBuffer(1, floats.length, sampleRate)
-      buffer.copyToChannel(floats, 0)
-      const source = audioContext.createBufferSource()
-      source.buffer = buffer
-      source.connect(audioContext.destination)
-      const start = Math.max(audioContext.currentTime + 0.05, nextTime)
-      source.start(start)
-      nextTime = start + buffer.duration
-      sources.push(source)
+    function markSpeaking(seconds) {
+      const now = performance.now()
+      speakUntil = Math.max(speakUntil, now) + Math.max(0, seconds) * 1000
       userSpeaking = false
       thinking = false
       renderPose()
-      source.onended = () => {
-        sources = sources.filter(item => item !== source)
-        if (sources.length === 0 && !responseOpen) thinking = false
-        renderPose()
+      clearTimeout(speakTimer)
+      speakTimer = setTimeout(renderPose, Math.max(0, speakUntil - performance.now()) + 40)
+    }
+
+    function playPcm(base64) {
+      if (dropAudio) return
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0))
+      if (bytes.length < 2) return
+      /* Prefer Web Audio (already resumed after getUserMedia). Native AudioQueue
+         is a fallback only — if it fails silently we still get sound here. */
+      if (audioContext) {
+        const aligned = bytes.byteOffset % 2 === 0 ? bytes : Uint8Array.from(bytes)
+        const view = new Int16Array(aligned.buffer, aligned.byteOffset, Math.floor(aligned.byteLength / 2))
+        const floats = new Float32Array(view.length)
+        for (let index = 0; index < view.length; index += 1) floats[index] = view[index] / 32768
+        const buffer = audioContext.createBuffer(1, floats.length, sampleRate)
+        buffer.copyToChannel(floats, 0)
+        const source = audioContext.createBufferSource()
+        source.buffer = buffer
+        source.connect(audioContext.destination)
+        const start = Math.max(audioContext.currentTime + 0.05, nextTime)
+        source.start(start)
+        nextTime = start + buffer.duration
+        sources.push(source)
+        markSpeaking(buffer.duration)
+        source.onended = () => {
+          sources = sources.filter(item => item !== source)
+          if (sources.length === 0 && !responseOpen) thinking = false
+          renderPose()
+        }
+        return
       }
+      const native = window.webkit?.messageHandlers?.pet
+      if (!native) return
+      native.postMessage({ kind: 'audio', pcm: base64, rate: sampleRate })
+      markSpeaking((bytes.length / 2) / sampleRate)
     }
 
     function levelOf(samples) {
@@ -237,13 +247,44 @@
         const level = levelOf(input)
         lastLevel = level
         const now = performance.now()
+        const dt = lastProcessAt ? Math.min(80, now - lastProcessAt) : 0
+        lastProcessAt = now
         const playing = now < speakUntil
-        const loudEnough = level >= Math.max(gate * 3, 0.05)
+        /* While she is talking, require a clearly louder mic level before we
+           treat room/ headphone bleed as barge-in; otherwise Inworld VAD
+           interrupts her, captions still arrive, and the pet stays silent. */
+        const bargeIn = level >= Math.max(gate * 10, 0.15)
         if (now - lastLevelSent > 80) {
           lastLevelSent = now
           socket.send(JSON.stringify({ type: 'level', value: Math.round(level * 1000) / 1000 }))
         }
-        const pass = playing ? loudEnough : level >= gate
+        const pass = playing ? bargeIn : level >= gate
+        if (playing && bargeIn) {
+          if (!dropAudio) {
+            dropAudio = true
+            commitPending = false
+            stopPlayback()
+            socket.send(JSON.stringify({ type: 'cut' }))
+          }
+          voiced = true
+          silentMs = 0
+          userSpeaking = true
+        } else if (!playing && !commitPending) {
+          if (pass) {
+            voiced = true
+            silentMs = 0
+            userSpeaking = true
+          } else if (voiced) {
+            silentMs += dt
+            if (silentMs >= SILENCE_BEFORE_SEND_MS) {
+              voiced = false
+              silentMs = 0
+              commitPending = true
+              userSpeaking = false
+              socket.send(JSON.stringify({ type: 'commit' }))
+            }
+          }
+        }
         const heard = pass ? input : new Float32Array(input.length)
         const pcm = downsample(heard, audioContext.sampleRate)
         socket.send(JSON.stringify({ type: 'audio', pcm }))
@@ -265,15 +306,25 @@
         thinking = false
         renderPose()
       }
-      if (message.type === 'error') showBubble(message.message)
+      if (message.type === 'error') {
+        commitPending = false
+        showBubble(message.message)
+      }
       if (message.type === 'interrupt') {
-        const echo = performance.now() < speakUntil && lastLevel < Math.max(gate * 3, 0.05)
-        if (!echo) {
-          userSpeaking = true
-          dropAudio = true
-          thinking = false
-          socket?.send(JSON.stringify({ type: 'cut' }))
-          stopPlayback()
+        userSpeaking = true
+        thinking = false
+        const playing = performance.now() < speakUntil
+        /* User speech_started must NOT arm dropAudio for the upcoming reply.
+           Old logic set dropAudio on every interrupt, so captions still arrived
+           at response end while every audio delta was discarded. Only barge-in
+           during her active turn should cut playback. */
+        if (playing || responseOpen) {
+          const bargeIn = lastLevel >= Math.max(gate * 10, 0.15)
+          if (bargeIn) {
+            dropAudio = true
+            socket?.send(JSON.stringify({ type: 'cut' }))
+            stopPlayback()
+          }
         }
       }
       if (message.type === 'listen-end') userSpeaking = false
@@ -285,12 +336,17 @@
       if (message.type === 'response-done') {
         responseOpen = false
         dropAudio = false
+        commitPending = false
         if (sources.length === 0) thinking = false
       }
       if (message.type === 'response-started') {
         responseOpen = true
+        dropAudio = false
+        commitPending = true
         thinking = true
         userSpeaking = false
+        voiced = false
+        silentMs = 0
       }
       if (message.type === 'caption' && message.role === 'her' && message.text) showBubble(message.text)
       renderPose()
@@ -324,30 +380,35 @@
 
     let dragging = false
     let moved = false
-    let last = null
+    let origin = null
     window.addEventListener('pointerdown', event => {
       if (event.button !== 0) return
       if (!event.target.closest('#close')) closeButton.classList.remove('show')
       if (event.target.closest('[data-nodrag]')) return
       dragging = true
       moved = false
-      last = { x: event.screenX, y: event.screenY }
+      origin = { x: event.screenX, y: event.screenY }
+      /* Native Cocoa tracks NSEvent.mouseLocation so multi-monitor drags keep
+         working after the cursor leaves this WebView / screen. */
+      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'drag-start' })
     })
     window.addEventListener('pointermove', event => {
-      if (!dragging || !last) return
-      const dx = event.screenX - last.x
-      const dy = event.screenY - last.y
-      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true
-      last = { x: event.screenX, y: event.screenY }
-      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'move', dx, dy })
+      if (!dragging || !origin) return
+      if (Math.abs(event.screenX - origin.x) + Math.abs(event.screenY - origin.y) > 3) moved = true
     })
     window.addEventListener('pointerup', () => {
       const wasDrag = moved
       dragging = false
-      last = null
+      origin = null
+      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'drag-end' })
       if (!wasDrag && (!socket || socket.readyState !== WebSocket.OPEN)) {
         start().catch(error => showBubble(error.message))
       }
+    })
+    window.addEventListener('pointercancel', () => {
+      dragging = false
+      origin = null
+      window.webkit?.messageHandlers?.pet?.postMessage({ kind: 'drag-end' })
     })
 
     start().catch(error => showBubble(error.message))

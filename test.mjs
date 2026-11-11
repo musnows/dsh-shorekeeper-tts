@@ -349,7 +349,7 @@ test('snaps playback volume to tenths between 0 and 1', async () => {
       }
     },
   })
-  assert.equal(calls[0][0], 'afplay')
+  assert.match(calls[0][0], /(^|\/)afplay$/)
   assert.equal(calls[0][1][0], '-v')
   assert.equal(calls[0][1][1], '0.2')
 
@@ -546,7 +546,7 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   const client = readFileSync(new URL('./packages/shorekeeper-tts/client.js', import.meta.url), 'utf8')
   assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
   assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
-  assert.equal(client.includes('shorekeeper-speaking-rate-v11'), true)
+  assert.equal(client.includes('shorekeeper-speaking-rate-v12'), true)
   assert.equal(client.includes('语速 0.8x–1.5x · 音量 0–1 · 起送 20–50 字'), true)
   assert.equal(client.includes('音量'), true)
   assert.equal(client.includes('起送字数'), true)
@@ -554,7 +554,7 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   assert.equal(client.includes('关闭播报'), true)
   assert.equal(client.includes('语音播报'), true)
   assert.equal(client.includes('桌面宠物'), true)
-  assert.equal(client.includes('收音'), true)
+  assert.equal(client.includes('收音阈值'), true)
   assert.equal(client.includes('麦克风'), true)
   assert.equal(client.includes("role: 'switch'"), true)
   assert.equal(client.includes("id: 'shorekeeper-speak'"), true)

@@ -63,6 +63,8 @@ final class PetApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKU
     let window: NSPanel
     let web: WKWebView
     let speaker = PcmSpeaker()
+    private var dragOffset: NSPoint?
+    private var dragTimer: Timer?
 
     override init() {
         let size = NSSize(width: 208, height: 288)
@@ -96,6 +98,7 @@ final class PetApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKU
         window.isOpaque = false
         window.hasShadow = false
         window.hidesOnDeactivate = false
+        window.animationBehavior = .none
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.contentView = web
         window.makeKeyAndOrderFront(nil)
@@ -130,10 +133,65 @@ final class PetApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKU
         }
     }
 
+    private func stopDrag(redisplay: Bool = false) {
+        dragTimer?.invalidate()
+        dragTimer = nil
+        if redisplay {
+            window.setFrame(window.frame, display: true)
+        }
+        dragOffset = nil
+    }
+
+    private func clampToScreens(_ frame: NSRect) -> NSRect {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return frame }
+        if screens.contains(where: { $0.frame.intersects(frame) }) {
+            return frame
+        }
+        let target = NSScreen.main?.visibleFrame ?? screens[0].visibleFrame
+        var next = frame
+        next.origin.x = min(max(next.origin.x, target.minX), max(target.minX, target.maxX - next.width))
+        next.origin.y = min(max(next.origin.y, target.minY), max(target.minY, target.maxY - next.height))
+        return next
+    }
+
+    private func moveWindowToMouse(display: Bool) {
+        guard let dragOffset else { return }
+        let mouse = NSEvent.mouseLocation
+        var frame = window.frame
+        frame.origin = NSPoint(x: mouse.x - dragOffset.x, y: mouse.y - dragOffset.y)
+        frame = clampToScreens(frame)
+        /* display:false while dragging avoids flicker on multi-GPU / multi-monitor. */
+        window.setFrame(frame, display: display)
+    }
+
+    private func beginNativeDrag() {
+        stopDrag()
+        let mouse = NSEvent.mouseLocation
+        let frame = window.frame
+        dragOffset = NSPoint(x: mouse.x - frame.origin.x, y: mouse.y - frame.origin.y)
+        /* Poll Cocoa mouse location while the button stays down. This keeps
+           working across displays without Accessibility permission, and does
+           not depend on WKWebView pointermove surviving the screen edge. */
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if NSEvent.pressedMouseButtons & 1 == 0 {
+                self.moveWindowToMouse(display: true)
+                self.stopDrag()
+                return
+            }
+            self.moveWindowToMouse(display: false)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dragTimer = timer
+        moveWindowToMouse(display: false)
+    }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "pet",
               let body = message.body as? [String: Any] else { return }
         if (body["kind"] as? String) == "close" {
+            stopDrag(redisplay: false)
             NSApp.terminate(nil)
             return
         }
@@ -147,13 +205,16 @@ final class PetApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKU
             speaker.stop()
             return
         }
-        guard (body["kind"] as? String) == "move" else { return }
-        let dx = (body["dx"] as? NSNumber)?.doubleValue ?? 0
-        let dy = (body["dy"] as? NSNumber)?.doubleValue ?? 0
-        var frame = window.frame
-        frame.origin.x += dx
-        frame.origin.y -= dy
-        window.setFrame(frame, display: true)
+        if (body["kind"] as? String) == "drag-start" {
+            beginNativeDrag()
+            return
+        }
+        if (body["kind"] as? String) == "drag-end" {
+            moveWindowToMouse(display: true)
+            stopDrag(redisplay: true)
+            return
+        }
+        /* Legacy delta moves are ignored: screenX deltas break across displays. */
     }
 
     func webView(

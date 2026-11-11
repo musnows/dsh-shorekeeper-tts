@@ -16,9 +16,26 @@ const INSTRUCTIONS = [
   '用很短的中文，每次一两句，必须有句号。',
   '不要分条，不要说自己是模型。',
   '和本机会话有关的问题，先调用工具，再根据工具结果回答。不要念工具原文。',
-  '要在某个项目里新开对话，调用 create_session，传入目录名和要做的事。不要把新任务塞进已有会话。',
-  'send_message 只能继续一个已有会话。桌面里开着的会话常常拒绝一次性投递。',
+  '要在某个项目里新开对话，调用 create_session，传入完整目录路径和要做的事。首句已经交给它，不要立刻再 send_message。',
+  'send_message 只能继续工具返回的空闲 session id。桌面窗口里开着的会话通常不能从外面投递；若返回正在跑，先等再发或换 create_session。',
 ].join('')
+
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
+
+function formatLocalClock(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const weekday = WEEKDAYS[date.getDay()]
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${year}年${month}月${day}日星期${weekday} ${hour}:${minute}:${second}`
+}
+
+function instructionsWithFrozenClock(clockText) {
+  return `${INSTRUCTIONS}当前本机时间是${clockText}。这段时间信息只在会话开始时固定一次，之后不要自行改写。`
+}
 
 const TOOLS = [
   {
@@ -123,11 +140,9 @@ function sessionUpdate({ instructions = INSTRUCTIONS, tools = TOOLS } = {}) {
       audio: {
         input: {
           transcription: { model: 'inworld/inworld-stt-1' },
-          turn_detection: {
-            type: 'semantic_vad',
-            create_response: true,
-            interrupt_response: true,
-          },
+          /* Client commits after 1s below the local gate; server must not
+             auto-end on short pauses (semantic_vad was cutting mid-sentence). */
+          turn_detection: null,
         },
         output: {
           voice: VOICE,
@@ -246,12 +261,14 @@ function stopSpeaker() {
 function openSpeaker(rate) {
   const ffmpeg = ffmpegBin()
   if (!ffmpeg) return null
+  /* Do not hardcode -audio_device_index: device 0 is often a monitor /
+     virtual device, not the system default output the user is listening to. */
   const child = spawn(ffmpeg, [
     '-hide_banner', '-loglevel', 'error',
     '-fflags', 'nobuffer', '-flags', 'low_delay',
     '-f', 's16le', '-ar', String(rate), '-ac', '1',
     '-i', 'pipe:0',
-    '-f', 'audiotoolbox', '-audio_device_index', '0',
+    '-f', 'audiotoolbox',
     '-y', '/dev/null',
   ], { stdio: ['pipe', 'ignore', 'pipe'] })
   child.rate = rate
@@ -269,6 +286,10 @@ function openSpeaker(rate) {
 }
 
 function playSpeaker(base64, rate) {
+  /* Pet window already plays PCM through its native AudioQueue on the
+     system default device. Server-side ffmpeg is only a fallback when no
+     pet browser is attached (e.g. the plain / index page). */
+  if (petBrowsers.size > 0) return
   const audio = Buffer.from(base64, 'base64')
   if (audio.length === 0) return
   if (!speaker || speaker.exitCode != null || speaker.rate !== rate || !speaker.stdin?.writable) {
@@ -429,6 +450,15 @@ function serve() {
   const sockets = new WebSocketServer({ server, path: '/ws' })
   sockets.on('connection', browser => {
     let api
+    /* Snapshot local clock once for this realtime session; later session.update
+       calls must reuse the same instructions string. */
+    let frozenInstructions = null
+    const sessionUpdateOnce = () => {
+      if (!frozenInstructions) {
+        frozenInstructions = instructionsWithFrozenClock(formatLocalClock())
+      }
+      return sessionUpdate({ instructions: frozenInstructions })
+    }
     const send = event => {
       if (browser.readyState === WebSocket.OPEN) browser.send(JSON.stringify(event))
     }
@@ -452,7 +482,7 @@ function serve() {
       if (message.type === 'response.output_audio.delta' && typeof message.delta === 'string') {
         playSpeaker(message.delta, outputRate)
       }
-      if (message.type === 'session.created') api.send(JSON.stringify(sessionUpdate()))
+      if (message.type === 'session.created') api.send(JSON.stringify(sessionUpdateOnce()))
       const event = publicEvent(message)
       if (event) send(event)
     })
@@ -468,11 +498,19 @@ function serve() {
       }
       if (message.type === 'cut') {
         stopSpeaker()
+        if (api.readyState === WebSocket.OPEN) {
+          try { api.send(JSON.stringify({ type: 'response.cancel' })) } catch { /* closed */ }
+        }
         return
       }
       if (api.readyState !== WebSocket.OPEN) return
       if (message.type === 'audio' && typeof message.pcm === 'string') {
         api.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: message.pcm }))
+        return
+      }
+      if (message.type === 'commit') {
+        api.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+        api.send(JSON.stringify({ type: 'response.create' }))
       }
     })
     petBrowsers.add(browser)

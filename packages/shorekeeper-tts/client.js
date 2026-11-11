@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     const GATE_STEP = 0.001
     const GATE_DEFAULT = 0.012
     const ENTRY_ID = '守岸人语音'
-    const STYLE_ID = 'shorekeeper-speaking-rate-v11'
+    const STYLE_ID = 'shorekeeper-speaking-rate-v12'
     const SPEAK_CHANNEL = '/shorekeeper-tts'
 
     function snapSpeakingRate(value) {
@@ -66,13 +66,13 @@ window.__ModuleLoader__.load({
         '.shorekeeper-rate::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:8px;height:8px;margin-top:-3px;border:0;border-radius:50%;background:currentColor;}',
         '.shorekeeper-rate::-moz-range-track{height:2px;border:0;border-radius:1px;background:linear-gradient(to right,currentColor 0,currentColor var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) var(--shorekeeper-rate-fill),var(--dsw-alias-border-l3) 100%);}',
         '.shorekeeper-rate::-moz-range-thumb{width:8px;height:8px;border:0;border-radius:50%;background:currentColor;}',
-        '.shorekeeper-rate-pop{position:fixed;z-index:80;box-sizing:border-box;width:max-content;min-width:232px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;border-radius:8px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-tertiary);}',
+        '.shorekeeper-rate-pop{position:fixed;z-index:80;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;width:max-content;min-width:232px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;border-radius:8px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-tertiary);}',
         '.shorekeeper-rate-actions{display:flex;align-items:center;gap:12px;}',
         '.shorekeeper-rate-row{display:flex;flex-direction:column;align-items:stretch;gap:6px;}',
         '.shorekeeper-rate-row-label{font-size:var(--dsh-content-font-size-secondary);color:var(--dsw-alias-label-tertiary);}',
         '.shorekeeper-rate-stop{appearance:none;-webkit-appearance:none;background:transparent;border:0;box-shadow:none;padding:0;margin:0;font-family:inherit;font-weight:inherit;font-size:var(--dsh-content-font-size-secondary);line-height:inherit;color:var(--dsw-alias-label-tertiary);cursor:pointer;white-space:nowrap;}',
         '.shorekeeper-rate-stop:hover,.shorekeeper-rate-stop:focus,.shorekeeper-rate-stop:active{background:transparent;border:0;box-shadow:none;outline:none;}',
-        '.shorekeeper-rate-config{display:flex;flex-direction:column;align-items:flex-start;gap:8px;color:var(--dsw-alias-label-tertiary);font-size:var(--dsh-content-font-size-secondary);}',
+        '.shorekeeper-rate-config{display:flex;flex-direction:column;align-items:flex-start;gap:10px;color:var(--dsw-alias-label-tertiary);font-size:var(--dsh-content-font-size-secondary);}',
         '.shorekeeper-rate-summary,.shorekeeper-rate-error{font-size:var(--dsh-content-font-size-secondary);color:var(--dsw-alias-label-tertiary);}',
         '.shorekeeper-speak-action{display:inline-flex;align-items:center;justify-content:center;width:calc(28px + var(--dsh-content-font-delta,0px));height:calc(28px + var(--dsh-content-font-delta,0px));padding:6px;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
         '.shorekeeper-speak-action:hover{background:var(--dsw-alias-fill-hover,transparent);}',
@@ -80,7 +80,8 @@ window.__ModuleLoader__.load({
         '.shorekeeper-speak-action svg{width:calc(15px + var(--dsh-content-font-delta,0px));height:calc(15px + var(--dsh-content-font-delta,0px));display:block;}',
         '.shorekeeper-speak-action[data-busy="true"]{color:var(--dsw-alias-label-secondary);}',
         '.shorekeeper-speak-action[data-error="true"]{color:var(--dsw-alias-status-danger, #d94c4c);}',
-        '.shorekeeper-rate-divider{height:1px;margin:2px 0;background:var(--dsw-alias-border-l3);}',
+        '.shorekeeper-rate-divider{height:1px;margin:0;background:var(--dsw-alias-border-l3);}',
+        '.shorekeeper-rate-pet{display:flex;flex-direction:column;align-items:stretch;gap:10px;}',
         '.shorekeeper-switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}',
         '.shorekeeper-switch{position:relative;width:28px;height:16px;flex:0 0 auto;border:0;border-radius:8px;padding:0;background:var(--dsw-alias-border-l3);cursor:pointer;}',
         '.shorekeeper-switch[aria-checked="true"]{background:currentColor;}',
@@ -516,41 +517,43 @@ window.__ModuleLoader__.load({
           React.createElement(VolumeSlider, { value: volume.shown, onChange: volume.commit }),
         ),
         React.createElement('div', { className: 'shorekeeper-rate-divider' }),
-        React.createElement(SwitchRow, {
-          title: '桌面宠物',
-          on: pet.enabled,
-          label: pet.enabled ? '关闭桌宠' : '打开桌宠',
-          onToggle() { void pet.setEnabled(!pet.enabled) },
-        }),
-        pet.enabled
-          ? React.createElement(React.Fragment, null,
-            React.createElement('div', { className: 'shorekeeper-rate-row' },
-              React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `收音 ${Math.round(gate.shown / GATE_MAX * 100)}%`),
-              React.createElement(RangeSlider, {
-                value: gate.shown,
-                min: GATE_MIN,
-                max: GATE_MAX,
-                step: GATE_STEP,
-                fill: gateFill,
-                label: '收音',
-                onChange: gate.commit,
-              }),
-            ),
-            React.createElement('div', { className: 'shorekeeper-rate-row' },
-              React.createElement('div', { className: 'shorekeeper-rate-row-label' }, '麦克风'),
-              React.createElement('div', { className: 'shorekeeper-mic', 'aria-label': '麦克风' },
-                React.createElement('div', {
-                  className: 'shorekeeper-mic-level',
-                  style: { width: `${Math.min(100, level / GATE_MAX * 100)}%` },
-                }),
-                React.createElement('div', {
-                  className: 'shorekeeper-mic-mark',
-                  style: { left: `${Math.min(100, gate.shown / GATE_MAX * 100)}%` },
+        React.createElement('div', { className: 'shorekeeper-rate-pet' },
+          React.createElement(SwitchRow, {
+            title: '桌面宠物',
+            on: pet.enabled,
+            label: pet.enabled ? '关闭桌宠' : '打开桌宠',
+            onToggle() { void pet.setEnabled(!pet.enabled) },
+          }),
+          pet.enabled
+            ? React.createElement(React.Fragment, null,
+              React.createElement('div', { className: 'shorekeeper-rate-row' },
+                React.createElement('div', { className: 'shorekeeper-rate-row-label' }, `收音阈值 ${Math.round(gate.shown / GATE_MAX * 100)}%`),
+                React.createElement(RangeSlider, {
+                  value: gate.shown,
+                  min: GATE_MIN,
+                  max: GATE_MAX,
+                  step: GATE_STEP,
+                  fill: gateFill,
+                  label: '收音阈值',
+                  onChange: gate.commit,
                 }),
               ),
-            ),
-          )
-          : null,
+              React.createElement('div', { className: 'shorekeeper-rate-row' },
+                React.createElement('div', { className: 'shorekeeper-rate-row-label' }, '麦克风'),
+                React.createElement('div', { className: 'shorekeeper-mic', 'aria-label': '麦克风' },
+                  React.createElement('div', {
+                    className: 'shorekeeper-mic-level',
+                    style: { width: `${Math.min(100, level / GATE_MAX * 100)}%` },
+                  }),
+                  React.createElement('div', {
+                    className: 'shorekeeper-mic-mark',
+                    style: { left: `${Math.min(100, gate.shown / GATE_MAX * 100)}%` },
+                  }),
+                ),
+              ),
+            )
+            : null,
+        ),
         saveFailed ? React.createElement('div', { className: 'shorekeeper-rate-error' }, '没有保存') : null,
         pet.error ? React.createElement('div', { className: 'shorekeeper-rate-error' }, pet.error) : null,
       )

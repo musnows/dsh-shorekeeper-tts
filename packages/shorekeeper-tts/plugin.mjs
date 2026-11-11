@@ -328,7 +328,8 @@ export async function playMp3(audio, controls = {}) {
     if (controls.isCurrent && !controls.isCurrent()) return
     await new Promise((resolve, reject) => {
       const launch = controls.spawn ?? spawn
-      const player = launch('afplay', afplayArgs(audioPath, controls.volume), { stdio: 'ignore' })
+      const afplay = existsSync('/usr/bin/afplay') ? '/usr/bin/afplay' : 'afplay'
+      const player = launch(afplay, afplayArgs(audioPath, controls.volume), { stdio: 'ignore' })
       let settled = false
       const finish = () => {
         if (settled) return
