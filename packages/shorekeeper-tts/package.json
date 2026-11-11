@@ -13,6 +13,7 @@
   },
   "files": [
     "plugin.mjs",
+    "pet-settings.mjs",
     "client.js",
     "stop-hotkey.swift",
     "locale",

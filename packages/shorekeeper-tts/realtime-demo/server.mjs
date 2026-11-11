@@ -5,10 +5,13 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
-import { cancelSession, createSession, describeSession, describeSessions, sendToSession, steerSession } from './sessions.mjs'
+import { cancelSession, createSession, describeSession, describeSessions, sendToSession, setSessionHook, steerSession } from './sessions.mjs'
+import { readPetSettings, snapPetGate, STT_CHOICES, writePetSettings } from '../pet-settings.mjs'
 
 const VOICE = 'sunny-fern-4510__shorekeeper-pro'
 const MODEL = 'inworld/models/deepseek-v4.1-flash'
+const savedPetSettings = readPetSettings()
+const DEFAULT_STT = STT_CHOICES[0].id
 const PORT = Number(process.env.PORT || 18765)
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const INSTRUCTIONS = [
@@ -127,31 +130,55 @@ function loadKey() {
   throw new Error('INWORLD_API_KEY is missing')
 }
 
+function knownStt(id) {
+  return STT_CHOICES.some(item => item.id === id)
+}
+
+let sttModel = knownStt(savedPetSettings.sttModel) ? savedPetSettings.sttModel : DEFAULT_STT
+
+function writeSttModel(id) {
+  const saved = writePetSettings({ sttModel: id })
+  if (!saved) return false
+  sttModel = saved.sttModel
+  return true
+}
+
+function transcriptionConfig() {
+  if (sttModel === 'soniox/stt-rt-v4') {
+    return {
+      model: sttModel,
+      prompt: '编程对话，中英夹杂。词汇：git, null, async, await, React, TypeScript, API, bug, PR, commit.',
+    }
+  }
+  return { model: sttModel }
+}
+
 function sessionUpdate({ instructions = INSTRUCTIONS, tools = TOOLS } = {}) {
-  return {
-    type: 'session.update',
-    session: {
-      type: 'realtime',
-      model: MODEL,
-      instructions,
-      tools,
-      tool_choice: 'auto',
-      output_modalities: ['audio', 'text'],
-      audio: {
-        input: {
-          transcription: { model: 'inworld/inworld-stt-1' },
-          /* Client commits after 1s below the local gate; server must not
-             auto-end on short pauses (semantic_vad was cutting mid-sentence). */
-          turn_detection: null,
-        },
-        output: {
-          voice: VOICE,
-          model: 'inworld-tts-2',
-          format: { type: 'audio/pcm', rate: 24000 },
-        },
+  const session = {
+    type: 'realtime',
+    model: MODEL,
+    instructions,
+    tools,
+    tool_choice: 'auto',
+    output_modalities: ['audio', 'text'],
+    audio: {
+      input: {
+        transcription: transcriptionConfig(),
+        /* Client commits after 1s below the local gate; server must not
+           auto-end on short pauses (semantic_vad was cutting mid-sentence). */
+        turn_detection: null,
+      },
+      output: {
+        voice: VOICE,
+        model: 'inworld-tts-2',
+        format: { type: 'audio/pcm', rate: 24000 },
       },
     },
   }
+  if (sttModel === 'soniox/stt-rt-v4') {
+    session.providerData = { stt: { language_hints: ['zh', 'en'] } }
+  }
+  return { type: 'session.update', session }
 }
 
 function connectInworld() {
@@ -300,15 +327,30 @@ function playSpeaker(base64, rate) {
   speaker.stdin.write(audio)
 }
 
-let inputGate = 0.012
+let inputGate = snapPetGate(savedPetSettings.inputGate)
 let inputLevel = 0
 let outputRate = 24000
 const petBrowsers = new Set()
+const liveApis = new Set()
+
+function broadcastStt() {
+  for (const live of liveApis) {
+    if (live.api.readyState !== WebSocket.OPEN || !live.instructions) continue
+    try {
+      live.api.send(JSON.stringify(sessionUpdate({ instructions: live.instructions })))
+    } catch {
+      // A closed socket drops out on the next browser close.
+    }
+  }
+}
 
 function applyInputGate(value) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return inputGate
-  inputGate = Math.min(0.08, Math.max(0, Math.round(number * 1000) / 1000))
+  const snapped = snapPetGate(value)
+  if (!Number.isFinite(Number(value))) return inputGate
+  inputGate = snapped
+  try { writePetSettings({ inputGate }) } catch {
+    // The open pet still hears the new gate for this process.
+  }
   const event = JSON.stringify({ type: 'gate', value: inputGate })
   for (const browser of petBrowsers) {
     if (browser.readyState === WebSocket.OPEN) browser.send(event)
@@ -438,9 +480,43 @@ function serve() {
       })
       return
     }
+    if (request.method === 'POST' && url.pathname === '/session-hook') {
+      const chunks = []
+      request.on('data', chunk => chunks.push(chunk))
+      request.on('end', () => {
+        let urlValue = ''
+        try { urlValue = JSON.parse(Buffer.concat(chunks).toString('utf8')).url } catch { /* keep the current hook */ }
+        const applied = setSessionHook(typeof urlValue === 'string' ? urlValue : '')
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ ok: Boolean(applied) }))
+      })
+      return
+    }
     if (request.method === 'GET' && url.pathname === '/level') {
       response.writeHead(200, { 'content-type': 'application/json' })
       response.end(JSON.stringify({ value: inputLevel }))
+      return
+    }
+    if (request.method === 'GET' && url.pathname === '/stt') {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ model: sttModel, choices: STT_CHOICES }))
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/stt') {
+      const chunks = []
+      request.on('data', chunk => chunks.push(chunk))
+      request.on('end', () => {
+        let model = ''
+        try { model = JSON.parse(Buffer.concat(chunks).toString('utf8')).model } catch { model = '' }
+        if (!writeSttModel(typeof model === 'string' ? model : '')) {
+          response.writeHead(400, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ error: '没有这个识别模型。' }))
+          return
+        }
+        broadcastStt()
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ model: sttModel, choices: STT_CHOICES }))
+      })
       return
     }
     response.writeHead(404)
@@ -450,20 +526,22 @@ function serve() {
   const sockets = new WebSocketServer({ server, path: '/ws' })
   sockets.on('connection', browser => {
     let api
+    const live = { api: null, instructions: null }
     /* Snapshot local clock once for this realtime session; later session.update
        calls must reuse the same instructions string. */
-    let frozenInstructions = null
     const sessionUpdateOnce = () => {
-      if (!frozenInstructions) {
-        frozenInstructions = instructionsWithFrozenClock(formatLocalClock())
+      if (!live.instructions) {
+        live.instructions = instructionsWithFrozenClock(formatLocalClock())
       }
-      return sessionUpdate({ instructions: frozenInstructions })
+      return sessionUpdate({ instructions: live.instructions })
     }
     const send = event => {
       if (browser.readyState === WebSocket.OPEN) browser.send(JSON.stringify(event))
     }
     try {
       api = connectInworld()
+      live.api = api
+      liveApis.add(live)
     } catch (error) {
       send({ type: 'error', message: error instanceof Error ? error.message : '连不上语音。' })
       return
@@ -516,6 +594,7 @@ function serve() {
     petBrowsers.add(browser)
     browser.on('close', () => {
       petBrowsers.delete(browser)
+      liveApis.delete(live)
       api.close()
     })
     send({ type: 'gate', value: inputGate })

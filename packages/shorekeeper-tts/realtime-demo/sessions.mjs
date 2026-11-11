@@ -11,6 +11,43 @@ const DSH = '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/b
 const ID_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const children = new Map()
+const announced = new Set()
+let sessionHook = ''
+
+export function setSessionHook(url) {
+  const next = String(url ?? '').trim()
+  if (!next) {
+    sessionHook = ''
+    return ''
+  }
+  try {
+    const parsed = new URL(next)
+    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') return sessionHook
+    sessionHook = parsed.href
+  } catch {
+    // A bad hook URL is ignored. Creating the session still returns its own text.
+  }
+  return sessionHook
+}
+
+export async function publishNewSession(id, cwd) {
+  if (!sessionHook || !ID_PATTERN.test(id) || announced.has(id)) return false
+  announced.add(id)
+  try {
+    const response = await fetch(sessionHook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, cwd }),
+    })
+    if (!response.ok) announced.delete(id)
+    return response.ok
+  } catch {
+    announced.delete(id)
+    return false
+  }
+}
+
+setSessionHook(process.env.SHOREKEEPER_SESSION_HOOK || '')
 
 function clip(text, limit = 180) {
   const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
@@ -246,6 +283,27 @@ function explainHandoffError(errorText, id) {
   return clip(text, 240) || (id ? `没有交出去。` : `没有新开。`)
 }
 
+function watchNewSession(cwd, since) {
+  let stopped = false
+  const stop = () => { stopped = true }
+  const run = async () => {
+    while (!stopped) {
+      try {
+        const created = await newestSessionIn(cwd)
+        if (created && created.updatedAt >= since - 1000 && ID_PATTERN.test(created.id)) {
+          await publishNewSession(created.id, created.cwd || cwd)
+          return
+        }
+      } catch {
+        // The log can still be appearing. The next pass looks again.
+      }
+      await new Promise(resolve => setTimeout(resolve, 400))
+    }
+  }
+  void run()
+  return stop
+}
+
 function handoff(id, task, cwd = os.homedir()) {
   if (id && !ID_PATTERN.test(id)) return Promise.resolve('会话 id 不合规，没有交给它。')
   const workdir = cwd && cwd.trim() ? cwd : os.homedir()
@@ -255,6 +313,7 @@ function handoff(id, task, cwd = os.homedir()) {
   return new Promise(resolve => {
     const key = id || workdir
     const before = Date.now()
+    const stopWatch = id ? () => {} : watchNewSession(workdir, before)
     const child = spawn(DSH, args, {
       cwd: workdir,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -275,12 +334,23 @@ function handoff(id, task, cwd = os.homedir()) {
       resolve(text)
     }
     child.once('error', error => {
+      stopWatch()
       children.delete(key)
       finish(id ? `没有交出去。${error.message}` : `没有新开。${error.message}`)
     })
     child.once('exit', code => {
       children.delete(key)
       void (async () => {
+        stopWatch()
+        let created = null
+        if (!id) {
+          created = await newestSessionIn(workdir)
+          if (created && created.updatedAt >= before - 1000) {
+            await publishNewSession(created.id, created.cwd || workdir)
+          } else {
+            created = null
+          }
+        }
         if (code !== 0) {
           finish(explainHandoffError(errorText, id))
           return
@@ -289,8 +359,7 @@ function handoff(id, task, cwd = os.homedir()) {
           finish(`已经投递到 ${id}，这一句做完了。`)
           return
         }
-        const created = await newestSessionIn(workdir)
-        if (created && created.updatedAt >= before - 1000) {
+        if (created) {
           finish(`已在 ${workdir} 新开 ${created.id}，首句做完了。后续空闲时用这个 id 调用 send_message。`)
           return
         }
