@@ -16,8 +16,8 @@ const INSTRUCTIONS = [
   '用很短的中文，每次一两句，必须有句号。',
   '不要分条，不要说自己是模型。',
   '和本机会话有关的问题，先调用工具，再根据工具结果回答。不要念工具原文。',
-  '要在某个项目里新开对话，调用 create_session，传入目录名和要做的事。不要把新任务塞进已有会话。',
-  'send_message 只能继续一个已有会话。桌面里开着的会话常常拒绝一次性投递。',
+  '要在某个项目里新开对话，调用 create_session，传入完整目录路径和要做的事。首句已经交给它，不要立刻再 send_message。',
+  'send_message 只能继续工具返回的空闲 session id。桌面窗口里开着的会话通常不能从外面投递；若返回正在跑，先等再发或换 create_session。',
 ].join('')
 
 const TOOLS = [
@@ -123,11 +123,9 @@ function sessionUpdate({ instructions = INSTRUCTIONS, tools = TOOLS } = {}) {
       audio: {
         input: {
           transcription: { model: 'inworld/inworld-stt-1' },
-          turn_detection: {
-            type: 'semantic_vad',
-            create_response: true,
-            interrupt_response: true,
-          },
+          /* Client commits after 1s below the local gate; server must not
+             auto-end on short pauses (semantic_vad was cutting mid-sentence). */
+          turn_detection: null,
         },
         output: {
           voice: VOICE,
@@ -474,11 +472,19 @@ function serve() {
       }
       if (message.type === 'cut') {
         stopSpeaker()
+        if (api.readyState === WebSocket.OPEN) {
+          try { api.send(JSON.stringify({ type: 'response.cancel' })) } catch { /* closed */ }
+        }
         return
       }
       if (api.readyState !== WebSocket.OPEN) return
       if (message.type === 'audio' && typeof message.pcm === 'string') {
         api.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: message.pcm }))
+        return
+      }
+      if (message.type === 'commit') {
+        api.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+        api.send(JSON.stringify({ type: 'response.create' }))
       }
     })
     petBrowsers.add(browser)

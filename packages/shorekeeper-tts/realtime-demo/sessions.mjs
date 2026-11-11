@@ -186,14 +186,28 @@ function quoteTask(text) {
   return task.startsWith('-') ? `请处理：${task}` : task
 }
 
+async function waitUntilIdle(sessionId, timeoutMs = 45000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const found = await findSession(sessionId)
+    if (found.error) return found
+    if (!found.session.running) return found
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  return { error: '它还在跑，这一轮还没结束，稍后再交代。' }
+}
+
 export async function sendToSession(query, text) {
   const task = quoteTask(text)
   if (!task) return '没有要交代的话。'
   if (task.length > 2000) return '这句话太长了，缩短后再交给它。'
-  const found = await findSession(query)
+  let found = await findSession(query)
   if (found.error) return found.error
-  if (found.session.running) return '它正在跑。这一轮我插不进去，等它停下来再交代。'
-  return handoff(found.session.id, task)
+  if (found.session.running) {
+    found = await waitUntilIdle(found.session.id)
+    if (found.error) return found.error
+  }
+  return handoff(found.session.id, task, found.session.cwd || undefined)
 }
 
 export async function steerSession(query, text) {
@@ -216,17 +230,36 @@ export async function cancelSession(query) {
   return '它现在没在跑。'
 }
 
+async function newestSessionIn(cwd) {
+  const items = await listSessions()
+  return items.find(item => item.cwd === cwd) || null
+}
+
+function explainHandoffError(errorText, id) {
+  const text = String(errorText || '')
+  if (/不能直接投递|一键运行器|preset|runner/i.test(text)) {
+    return '没发出去。那个会话不能从外面直接投递，请用 create_session 在目录里新开，或等桌面会话空闲后再试。'
+  }
+  if (/MISSING_CREDENTIAL|API key/i.test(text)) {
+    return '没发出去。headless 缺少 DEEPSEEK_API_KEY，请写在 ~/.dsh/.env。'
+  }
+  return clip(text, 240) || (id ? `没有交出去。` : `没有新开。`)
+}
+
 function handoff(id, task, cwd = os.homedir()) {
   if (id && !ID_PATTERN.test(id)) return Promise.resolve('会话 id 不合规，没有交给它。')
+  const workdir = cwd && cwd.trim() ? cwd : os.homedir()
   const args = ['--profile', 'headless', '--approval-policy', 'never']
   if (id) args.push('--session-id', id)
   args.push(task)
   return new Promise(resolve => {
-    const key = id || cwd
+    const key = id || workdir
+    const before = Date.now()
     const child = spawn(DSH, args, {
-      cwd,
+      cwd: workdir,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
+      env: { ...process.env, DSH_HOME: process.env.DSH_HOME || path.join(os.homedir(), '.dsh') },
     })
     children.set(key, child)
     let errorText = ''
@@ -241,20 +274,28 @@ function handoff(id, task, cwd = os.homedir()) {
       settled = true
       resolve(text)
     }
-    const timer = setTimeout(() => {
-      child.unref()
-      finish(id ? '已经交给这个会话，它开始做了。' : '已经在这个目录里新开了一个对话。')
-    }, 1500)
     child.once('error', error => {
-      clearTimeout(timer)
       children.delete(key)
       finish(id ? `没有交出去。${error.message}` : `没有新开。${error.message}`)
     })
     child.once('exit', code => {
-      clearTimeout(timer)
       children.delete(key)
-      if (code === 0) finish(id ? '这个会话已经做完这一句。' : '新开的对话已经做完。')
-      else finish(clip(errorText, 240) || (id ? `没有交出去，退出码 ${code}。` : `没有新开，退出码 ${code}。`))
+      void (async () => {
+        if (code !== 0) {
+          finish(explainHandoffError(errorText, id))
+          return
+        }
+        if (id) {
+          finish(`已经投递到 ${id}，这一句做完了。`)
+          return
+        }
+        const created = await newestSessionIn(workdir)
+        if (created && created.updatedAt >= before - 1000) {
+          finish(`已在 ${workdir} 新开 ${created.id}，首句做完了。后续空闲时用这个 id 调用 send_message。`)
+          return
+        }
+        finish(`已在 ${workdir} 新开对话，首句做完了。`)
+      })()
     })
   })
 }

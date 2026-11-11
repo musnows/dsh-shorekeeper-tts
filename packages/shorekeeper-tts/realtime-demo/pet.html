@@ -92,8 +92,13 @@
     const bubble = document.querySelector('#bubble')
     const closeButton = document.querySelector('#close')
     const GATE_MAX = 0.08
+    const SILENCE_BEFORE_SEND_MS = 1000
     let gate = 0.012
     let lastLevelSent = 0
+    let voiced = false
+    let silentMs = 0
+    let lastProcessAt = 0
+    let commitPending = false
     const poses = {
       idle: '/sprites/idle.png?v=2',
       listen: '/sprites/listen.png?v=2',
@@ -242,6 +247,8 @@
         const level = levelOf(input)
         lastLevel = level
         const now = performance.now()
+        const dt = lastProcessAt ? Math.min(80, now - lastProcessAt) : 0
+        lastProcessAt = now
         const playing = now < speakUntil
         /* While she is talking, require a clearly louder mic level before we
            treat room/ headphone bleed as barge-in; otherwise Inworld VAD
@@ -252,6 +259,32 @@
           socket.send(JSON.stringify({ type: 'level', value: Math.round(level * 1000) / 1000 }))
         }
         const pass = playing ? bargeIn : level >= gate
+        if (playing && bargeIn) {
+          if (!dropAudio) {
+            dropAudio = true
+            commitPending = false
+            stopPlayback()
+            socket.send(JSON.stringify({ type: 'cut' }))
+          }
+          voiced = true
+          silentMs = 0
+          userSpeaking = true
+        } else if (!playing && !commitPending) {
+          if (pass) {
+            voiced = true
+            silentMs = 0
+            userSpeaking = true
+          } else if (voiced) {
+            silentMs += dt
+            if (silentMs >= SILENCE_BEFORE_SEND_MS) {
+              voiced = false
+              silentMs = 0
+              commitPending = true
+              userSpeaking = false
+              socket.send(JSON.stringify({ type: 'commit' }))
+            }
+          }
+        }
         const heard = pass ? input : new Float32Array(input.length)
         const pcm = downsample(heard, audioContext.sampleRate)
         socket.send(JSON.stringify({ type: 'audio', pcm }))
@@ -273,7 +306,10 @@
         thinking = false
         renderPose()
       }
-      if (message.type === 'error') showBubble(message.message)
+      if (message.type === 'error') {
+        commitPending = false
+        showBubble(message.message)
+      }
       if (message.type === 'interrupt') {
         userSpeaking = true
         thinking = false
@@ -300,13 +336,17 @@
       if (message.type === 'response-done') {
         responseOpen = false
         dropAudio = false
+        commitPending = false
         if (sources.length === 0) thinking = false
       }
       if (message.type === 'response-started') {
         responseOpen = true
         dropAudio = false
+        commitPending = true
         thinking = true
         userSpeaking = false
+        voiced = false
+        silentMs = 0
       }
       if (message.type === 'caption' && message.role === 'her' && message.text) showBubble(message.text)
       renderPose()
