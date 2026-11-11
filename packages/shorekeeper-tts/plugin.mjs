@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { unlink, writeFile } from 'node:fs/promises'
 import { createConnection } from 'node:net'
@@ -6,6 +7,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Schema from '@deepseek-ai/schemastery'
+import { readPetSettings, snapPetGate, STT_CHOICES, writePetSettings } from './pet-settings.mjs'
 
 const TTS_ENDPOINT = 'https://api.inworld.ai/tts/v1/voice:stream'
 const VOICE_ID = 'sunny-fern-4510__shorekeeper-pro'
@@ -32,6 +34,13 @@ const GATE_MAX = 0.08
 const GATE_STEP = 0.001
 const GATE_DEFAULT = 0.012
 const PET_PORT = 18766
+const SESSION_HOOK_PORT = 18767
+const SESSION_ID_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const adoptedSessions = new Set()
+let sessionRevision = 0
+let sessionHookServer = null
+let sessionHookStarting = null
+let sessionHookCtx = null
 
 export const Config = Schema.object({
   speakingRate: Schema.number().min(RATE_MIN).max(RATE_MAX).step(RATE_STEP).default(1).volatile(),
@@ -619,6 +628,45 @@ export async function pushInputGate(value) {
   }
 }
 
+export async function sttModelOf(next) {
+  if (typeof next === 'string') {
+    let saved
+    try {
+      saved = writePetSettings({ sttModel: next })
+    } catch {
+      return { ok: false, error: { code: 'failed', message: '没有写到本机。' } }
+    }
+    if (!saved) return { ok: false, error: { code: 'unknown', message: '没有这个识别模型。' } }
+    try {
+      await fetch(`http://127.0.0.1:${PET_PORT}/stt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: saved.sttModel }),
+      })
+    } catch {
+      // The file is read the next time the pet server starts.
+    }
+    return { ok: true, value: { model: saved.sttModel, choices: STT_CHOICES } }
+  }
+  return { ok: true, value: { model: readPetSettings().sttModel, choices: STT_CHOICES } }
+}
+
+export async function gateSetting(next) {
+  if (typeof next === 'number') {
+    let saved
+    try {
+      saved = writePetSettings({ inputGate: snapPetGate(next) })
+    } catch {
+      return { ok: false, error: { code: 'failed', message: '没有写到本机。' } }
+    }
+    try { await pushInputGate(saved.inputGate) } catch {
+      // The open pet reads the file the next time it starts.
+    }
+    return { ok: true, value: { value: saved.inputGate } }
+  }
+  return { ok: true, value: { value: readPetSettings().inputGate } }
+}
+
 export async function petLevel() {
   try {
     const response = await fetch(`http://127.0.0.1:${PET_PORT}/level`)
@@ -631,14 +679,121 @@ export async function petLevel() {
   }
 }
 
+function sessionHookUrl() {
+  return `http://127.0.0.1:${SESSION_HOOK_PORT}/session`
+}
+
+async function registerSessionHook() {
+  try {
+    await fetch(`http://127.0.0.1:${PET_PORT}/session-hook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: sessionHookUrl() }),
+    })
+  } catch {
+    // The pet server receives the hook in its environment when this plugin starts it.
+  }
+}
+
+async function adoptPetSession(id, cwd) {
+  if (!SESSION_ID_PATTERN.test(id) || typeof cwd !== 'string' || !cwd.startsWith('/')) return
+  if (adoptedSessions.has(id)) return
+  const ctx = sessionHookCtx
+  const registry = ctx?.workspaceRegistry ?? ctx?.get?.('workspaceRegistry')
+  if (!registry?.resolveByPath || !registry?.create) {
+    console.error('[dsh-shorekeeper-tts] workspaceRegistry is unavailable')
+    return
+  }
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      let workspace = await registry.resolveByPath(cwd)
+      if (!workspace) workspace = await registry.create(cwd)
+      await workspace.attachSession(id)
+      adoptedSessions.add(id)
+      sessionRevision += 1
+      return
+    } catch (error) {
+      if (attempt === 7) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`[dsh-shorekeeper-tts] session ${id} did not join the workspace: ${message}`)
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 300))
+    }
+  }
+}
+
+function startSessionHook() {
+  if (sessionHookServer) return Promise.resolve()
+  if (sessionHookStarting) return sessionHookStarting
+  sessionHookStarting = new Promise(resolve => {
+    const server = createServer((request, response) => {
+      const url = new URL(request.url || '/', 'http://127.0.0.1')
+      if (request.method !== 'POST' || url.pathname !== '/session') {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      const chunks = []
+      let size = 0
+      request.on('data', chunk => {
+        size += chunk.length
+        if (size > 4096) {
+          response.writeHead(413)
+          response.end()
+          request.destroy()
+          return
+        }
+        chunks.push(chunk)
+      })
+      request.on('end', () => {
+        if (response.writableEnded) return
+        let body = {}
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { body = {} }
+        const id = typeof body.id === 'string' ? body.id : ''
+        const cwd = typeof body.cwd === 'string' ? body.cwd : ''
+        response.writeHead(202, { 'content-type': 'application/json' })
+        response.end('{}')
+        void adoptPetSession(id, cwd)
+      })
+    })
+    server.unref()
+    server.once('listening', () => {
+      sessionHookServer = server
+      sessionHookStarting = null
+      resolve()
+    })
+    server.once('error', error => {
+      sessionHookStarting = null
+      if (error?.code !== 'EADDRINUSE') {
+        console.error(`[dsh-shorekeeper-tts] session hook: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      resolve()
+    })
+    server.listen(SESSION_HOOK_PORT, '127.0.0.1')
+  })
+  return sessionHookStarting
+}
+
+function stopSessionHook() {
+  const server = sessionHookServer
+  sessionHookServer = null
+  if (server) server.close()
+}
+
 async function ensurePetServer(root) {
-  if (await portOpen(PET_PORT)) return true
+  await startSessionHook()
+  if (await portOpen(PET_PORT)) {
+    await registerSessionHook()
+    return true
+  }
   const logPath = join(homedir(), '.dsh', 'shorekeeper-voice.log')
   let logFd = 'ignore'
   try { logFd = openSync(logPath, 'a') } catch { logFd = 'ignore' }
   const env = {
     ...process.env,
     PORT: String(PET_PORT),
+    SHOREKEEPER_SESSION_HOOK: sessionHookUrl(),
     PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
   }
   delete env.ELECTRON_RUN_AS_NODE
@@ -718,6 +873,8 @@ export function createShorekeeperTtsPlugin({
   onReady,
 } = {}) {
   return function apply(ctx, config) {
+    sessionHookCtx = ctx
+    void startSessionHook()
     const buffer = createSpeechBuffer({
       minSpoken: () => minSpokenOf(config),
     })
@@ -769,7 +926,7 @@ export function createShorekeeperTtsPlugin({
       return null
     }
 
-    const publishGate = () => { void pushInputGate(inputGateOf(config)) }
+    const publishGate = () => { void pushInputGate(readPetSettings().inputGate) }
     ctx.on?.('loader/volatile-update', () => {
       if (!speechEnabledOf(config)) stop()
       publishGate()
@@ -828,9 +985,20 @@ export function createShorekeeperTtsPlugin({
           }
           const remove = connection.rpc.handle(SPEAK_CHANNEL, async (endpoint, payload) => {
             if (endpoint === 'pet') {
-              if (payload?.enabled === true) return rpcResult(await startPet(inputGateOf(config)))
+              if (payload?.enabled === true) return rpcResult(await startPet(readPetSettings().inputGate))
               if (payload?.enabled === false) return rpcResult(stopPet())
               return rpcResult({ ok: true, value: { enabled: petWindowPids().length > 0, level: await petLevel() } })
+            }
+            if (endpoint === 'sessions') {
+              return rpcResult({ ok: true, value: { revision: sessionRevision } })
+            }
+            if (endpoint === 'stt') {
+              const model = typeof payload?.model === 'string' ? payload.model : undefined
+              return rpcResult(await sttModelOf(model))
+            }
+            if (endpoint === 'gate') {
+              const value = typeof payload?.value === 'number' ? payload.value : undefined
+              return rpcResult(await gateSetting(value))
             }
             if (endpoint !== 'speak') {
               return rpcResult({ ok: false, error: { code: 'unknown', message: `unknown endpoint: ${String(endpoint)}` } })
@@ -854,12 +1022,13 @@ export function createShorekeeperTtsPlugin({
           console.error(`[dsh-shorekeeper-tts] failed to register speak RPC: ${error instanceof Error ? error.message : String(error)}`)
         }
       })
-      if (petWanted()) void startPet(inputGateOf(config))
+      if (petWanted()) void startPet(readPetSettings().inputGate)
       process.once('exit', closePetWithHost)
     }
 
     ctx.on?.('dispose', () => {
       closePetWithHost()
+      stopSessionHook()
       disposeHotkey()
       disposeRpc()
       if (typeof disposeCommand === 'function') disposeCommand()

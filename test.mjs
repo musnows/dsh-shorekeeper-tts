@@ -546,18 +546,59 @@ test('web patch turns off the harness opener and mounts both plugins', () => {
   const client = readFileSync(new URL('./packages/shorekeeper-tts/client.js', import.meta.url), 'utf8')
   assert.equal(client.includes("id: 'shorekeeper-speaking-rate'"), true)
   assert.equal(client.includes("'@dsh-local/shorekeeper-tts#守岸人语音'"), true)
-  assert.equal(client.includes('shorekeeper-speaking-rate-v12'), true)
+  assert.equal(client.includes('shorekeeper-speaking-rate-v13'), true)
   assert.equal(client.includes('语速 0.8x–1.5x · 音量 0–1 · 起送 20–50 字'), true)
   assert.equal(client.includes('音量'), true)
   assert.equal(client.includes('起送字数'), true)
   assert.equal(client.includes('minSpoken'), true)
   assert.equal(client.includes('关闭播报'), true)
   assert.equal(client.includes('语音播报'), true)
-  assert.equal(client.includes('桌面宠物'), true)
+  assert.equal(client.includes("name: 'shorekeeper.theme.pet'"), true)
+  assert.equal(client.includes('打开后停在屏幕上，可以随时关掉'), true)
   assert.equal(client.includes('收音阈值'), true)
-  assert.equal(client.includes('麦克风'), true)
+  assert.equal(client.includes("className: 'dshsk-range'"), true)
+  assert.equal(client.includes('aria-label\': \'麦克风\''), true)
+  assert.equal(client.includes('识别模型'), true)
+  assert.equal(client.includes('soniox/stt-rt-v4'), true)
   assert.equal(client.includes("role: 'switch'"), true)
   assert.equal(client.includes("id: 'shorekeeper-speak'"), true)
   assert.equal(client.includes('conversation.chat.assistant-actions'), true)
   assert.equal(client.includes('语音重播'), true)
+  assert.equal(client.includes('sessionsApi.refresh'), true)
+  assert.equal(client.includes("ctx.get?.('sessions')"), true)
+  assert.equal(client.includes('ctx.sessions'), false)
+})
+
+test('publishes a new session id only to the loopback hook', async () => {
+  const { createServer } = await import('node:http')
+  const { publishNewSession, setSessionHook } = await import('./packages/shorekeeper-tts/realtime-demo/sessions.mjs')
+  const seen = []
+  const server = createServer((request, response) => {
+    const chunks = []
+    request.on('data', chunk => chunks.push(chunk))
+    request.on('end', () => {
+      seen.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      response.writeHead(200)
+      response.end('{}')
+    })
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const id = 'session-202367c0-d7c7-4432-b9d9-2ef49799fbff'
+  try {
+    setSessionHook(`http://127.0.0.1:${port}/session`)
+    assert.equal(await publishNewSession(id, '/tmp/project'), true)
+    assert.equal(await publishNewSession(id, '/tmp/project'), false)
+    setSessionHook('http://example.com/session')
+    const other = 'session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    assert.equal(await publishNewSession(other, '/tmp/project'), true)
+    setSessionHook('')
+    assert.equal(await publishNewSession('session-bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee', '/tmp/project'), false)
+  } finally {
+    setSessionHook('')
+    server.closeAllConnections?.()
+    await new Promise(resolve => server.close(resolve))
+  }
+  assert.deepEqual(seen.map(item => item.id), [id, 'session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'])
+  assert.equal(seen[0].cwd, '/tmp/project')
 })
