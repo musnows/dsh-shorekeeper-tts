@@ -1,8 +1,8 @@
 # 守岸人主题 · Shorekeeper Theme
 
-## 0.0.1
+## 0.1.1
 
-源码收在 `dsh-shorekeeper-tts` 的 `packages/shorekeeper-theme`，包版本 `0.0.1`。主题页留出 `shorekeeper.theme.pet`，桌宠设置由语音插件挂进来。下面的 1.2.1 记录开场和界面行为。
+源码收在 `dsh-shorekeeper-tts` 的 `packages/shorekeeper-theme`，包版本 `0.1.1`。主题页留出 `shorekeeper.theme.pet`，桌宠设置由语音插件挂进来。下面的 1.2.1 记录开场和界面行为。
 
 ## 1.2.1 更新内容
 

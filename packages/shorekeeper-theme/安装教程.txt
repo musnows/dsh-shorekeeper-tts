@@ -1,5 +1,5 @@
 DeepSeek Harness · 守岸人主题（Shorekeeper Theme）
-版本 0.0.1 · 源码在 dsh-shorekeeper-tts/packages/shorekeeper-theme
+版本 0.1.1 · 源码在 dsh-shorekeeper-tts/packages/shorekeeper-theme
 
 ============================================================
 本次更新（1.2.1）

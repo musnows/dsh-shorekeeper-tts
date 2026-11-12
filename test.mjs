@@ -603,10 +603,10 @@ test('publishes a new session id only to the loopback hook', async () => {
   assert.equal(seen[0].cwd, '/tmp/project')
 })
 
-test('theme source ships in this repo at 0.0.1 with the pet slot', () => {
+test('theme source ships in this repo at 0.1.1 with the pet slot', () => {
   const manifest = JSON.parse(readFileSync(new URL('./packages/shorekeeper-theme/package.json', import.meta.url), 'utf8'))
   assert.equal(manifest.name, '@local/dsh-shorekeeper-startup')
-  assert.equal(manifest.version, '0.0.1')
+  assert.equal(manifest.version, '0.1.1')
   assert.equal(manifest.exports['./client'], './client.js')
   const patch = readFileSync(new URL('./cordis.yml', import.meta.url), 'utf8')
   assert.equal(patch.includes("'./packages/shorekeeper-theme/index.js'"), true)

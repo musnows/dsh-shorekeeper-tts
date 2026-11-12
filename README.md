@@ -4,7 +4,7 @@
 
 - **守岸人模拟**：插件一加载就进入守岸人人设，不需要再输入进入指令。
 - **守岸人语音**：回复往外流的时候，只把屏幕上的正文送给 Inworld，用守岸人音色朗读。推理和工具参数不读。
-- **守岸人主题**（`0.0.1`）：线稿开屏和可换背景。源码在 `packages/shorekeeper-theme`，包名 `@local/dsh-shorekeeper-startup`。主题页留了 `shorekeeper.theme.pet`，桌宠设置挂在这里。相对上游补回了 `shell.overlay` 挂载，避免桌面端开场只剩黑屏。
+- **守岸人主题**（`0.1.1`）：线稿开屏和可换背景。源码在 `packages/shorekeeper-theme`，包名 `@local/dsh-shorekeeper-startup`。主题页留了 `shorekeeper.theme.pet`，桌宠设置挂在这里。相对上游补回了 `shell.overlay` 挂载，避免桌面端开场只剩黑屏。
 
 人设材料来自 [SHOREKEEPER-AGENT](https://github.com/ArayaTouka1/SHOREKEEPER-AGENT)，没有整本照搬。文件名里带「越狱」的材料不会被读入。`{{char}}`、`{{user}}`、`{char}`、`{user}` 原样进入提示词，运行时不替换。
 
