@@ -744,3 +744,14 @@ test('web_search calls the DeepSeek search API with the LLM token', async () => 
     fetchImpl: async () => ({ ok: true, json: async () => ({ results: [] }) }),
   }), '没有搜到。')
 })
+
+test('phone companion can type on the realtime socket without moving the pet off loopback', () => {
+  const server = readFileSync('./packages/shorekeeper-tts/realtime-demo/server.mjs', 'utf8')
+  assert.equal(server.includes("message.type === 'text'"), true)
+  assert.equal(server.includes('input_text'), true)
+  assert.equal(server.includes("pathname === '/health'"), true)
+  assert.equal(server.includes('SHOREKEEPER_HOST'), true)
+  assert.equal(server.includes("server.listen(PORT, HOST"), true)
+  assert.equal(server.includes("server.listen(PORT, '127.0.0.1'"), false)
+  assert.equal(server.includes('https://api.deepseek.com'), false)
+})

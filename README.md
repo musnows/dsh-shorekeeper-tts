@@ -79,6 +79,43 @@ Inworld key 给 Dock 启动的客户端用：`~/.dsh/.env` 里的 `INWORLD_API_K
 
 网页进程和桌面进程各自听自己的快捷键，只停自己那一份播放。
 
+## 手机
+
+`android/` 是只给 Android 的守岸人手机伴侣。三页：在（她在身边）、说（对话）、听（播放刚才那句）。没有 iOS，也不改现有网页、插件和桌宠。
+
+没开语音服务、没有钥匙时，应用走本地示例。回复写在手机里，界面标着「本地示例」。朗读用手机自己的中文系统语音，不是守岸人音色。这一路用来让三页在没有密钥时也能用。
+
+要换成仓库里已有的实时语音，在电脑上另开一个终端：
+
+```sh
+cd packages/shorekeeper-tts/realtime-demo
+npm install
+node server.mjs
+```
+
+默认听 `127.0.0.1:18765`，和桌宠的 `18766` 分开，可以同时开。协议还是原来的 `/ws`：服务把 Inworld 的 PCM 推下来，手机播放。打字会多走一种客户端消息 `{ "type": "text", "text": "..." }`，桌宠不发这种消息。`GET /health` 用来看服务在不在。
+
+钥匙沿用桌面，不写进手机，也不进仓库。`INWORLD_API_KEY` 放进程环境或 `~/.dsh/.env`。没有它，`server.mjs` 接不上音色，手机停在本地示例。问到网上的事时，实时会话还会用 DeepSeek 搜索，读法和桌宠一样：`DEEPSEEK_API_KEY`，或 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`，或 `~/.dsh/.env`。本机会话工具仍然只在装着 DeepSeek Harness 的电脑上有用。
+
+模拟器访问这台电脑用应用里的「模拟器」地址 `ws://10.0.2.2:18765/ws`。USB 连着的手机先反向代理，再选「USB 手机」：
+
+```sh
+adb reverse tcp:18765 tcp:18765
+```
+
+服务默认只听本机。要给同一局域网的手机用，才加 `SHOREKEEPER_HOST=0.0.0.0`。这会把带钥匙的代理暴露在局域网里，不要对着公网。
+
+构建并安装：
+
+```sh
+cd android
+echo "sdk.dir=$ANDROID_HOME" > local.properties
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+`local.properties` 不进仓库。没有模拟器时，`assembleDebug` 只说明能编过。
+
 ## 提示词
 
 每轮都放人格本身。`06-世界.md` 的关键词段、角色卡里没有标成常驻的世界书，只有用户这一句碰到对应词才放进来。开场只取当前时段，好感例句只取「至交」，各随机最多 4 句。没有好感存档。

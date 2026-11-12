@@ -7,3 +7,10 @@ node_modules/
 *.pem
 *.key
 packages/shorekeeper-tts/realtime-demo/mac/ShorekeeperPet.app/
+android/.gradle/
+android/local.properties
+android/build/
+android/app/build/
+android/.kotlin/
+android/.idea/
+*.iml
