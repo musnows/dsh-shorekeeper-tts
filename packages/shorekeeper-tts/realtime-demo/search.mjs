@@ -10,6 +10,14 @@ export function clipUnicode(text, max) {
   return [...String(text ?? '')].slice(0, max).join('')
 }
 
+export function unicodeLength(text) {
+  return [...String(text ?? '')].length
+}
+
+function overLimit(field, text) {
+  return `${field} is ${unicodeLength(text)} characters, over the ${QUERY_MAX}-character limit. Shorten ${field} to ${QUERY_MAX} characters or fewer and call web_search again. Do not retry this same text.`
+}
+
 export function unquoteYamlScalar(value) {
   let text = String(value ?? '').trim()
   if (text.startsWith('"')) {
@@ -107,11 +115,13 @@ export async function webSearch({
   apiKey,
   fetchImpl = fetch,
 } = {}) {
-  const text = clipUnicode(String(query ?? '').trim(), QUERY_MAX).trim()
+  const text = String(query ?? '').trim()
   if (!text) return '没有搜索词。'
+  if (unicodeLength(text) > QUERY_MAX) return overLimit('query', text)
+  const original = String(question ?? '').trim()
+  if (original && unicodeLength(original) > QUERY_MAX) return overLimit('question', original)
   if (!apiKey) return '没有 DeepSeek 的密钥，搜不了。'
   const body = { query: text, count: RESULT_COUNT }
-  const original = clipUnicode(String(question ?? '').trim(), QUERY_MAX).trim()
   if (original) body.ori_question = original
   let response
   try {

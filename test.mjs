@@ -649,9 +649,8 @@ test('web_search calls the DeepSeek search API with the LLM token', async () => 
   assert.equal(server.includes('https://api.deepseek.com'), false)
 
   let request
-  const query = '守岸人'.repeat(80)
   const output = await webSearch({
-    query,
+    query: '守岸人',
     question: '她现在的版本是什么',
     apiKey: 'sk-test',
     fetchImpl: async (url, init) => {
@@ -675,7 +674,7 @@ test('web_search calls the DeepSeek search API with the LLM token', async () => 
   assert.equal(request.url, SEARCH_URL)
   assert.equal(request.init.headers.Authorization, 'Bearer sk-test')
   const body = JSON.parse(request.init.body)
-  assert.equal([...body.query].length, 128)
+  assert.equal(body.query, '守岸人')
   assert.equal(body.ori_question, '她现在的版本是什么')
   assert.equal(body.count, 5)
   assert.equal(output.includes('守岸人'), true)
@@ -684,6 +683,24 @@ test('web_search calls the DeepSeek search API with the LLM token', async () => 
   assert.equal(output.includes('sk-test'), false)
 
   assert.equal(await webSearch({ query: '   ', apiKey: 'sk-test', fetchImpl: async () => { throw new Error('no') } }), '没有搜索词。')
+  let called = false
+  const longQuery = '守岸人'.repeat(80)
+  const tooLong = await webSearch({
+    query: longQuery,
+    question: '她现在的版本是什么',
+    apiKey: 'sk-test',
+    fetchImpl: async () => { called = true },
+  })
+  assert.equal(called, false)
+  assert.equal(tooLong, 'query is 240 characters, over the 128-character limit. Shorten query to 128 characters or fewer and call web_search again. Do not retry this same text.')
+  const longQuestion = await webSearch({
+    query: '守岸人',
+    question: '问'.repeat(129),
+    apiKey: 'sk-test',
+    fetchImpl: async () => { called = true },
+  })
+  assert.equal(called, false)
+  assert.match(longQuestion, /^question is 129 characters, over the 128-character limit\. Shorten question/)
   assert.equal(await webSearch({ query: '天气', apiKey: '', fetchImpl: async () => { throw new Error('no') } }), '没有 DeepSeek 的密钥，搜不了。')
   assert.equal(await webSearch({
     query: '天气',
