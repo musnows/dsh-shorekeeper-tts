@@ -1,15 +1,16 @@
 # DSH 守岸人
 
-给 DeepSeek Harness（`dsh` `0.2.2-rc.1`）加两个本地插件：
+给 DeepSeek Harness（`dsh` `0.2.2-rc.1`）加三个本地插件，都在这个仓库里：
 
 - **守岸人模拟**：插件一加载就进入守岸人人设，不需要再输入进入指令。
 - **守岸人语音**：回复往外流的时候，只把屏幕上的正文送给 Inworld，用守岸人音色朗读。推理和工具参数不读。
+- **守岸人主题**（`0.0.1`）：线稿开屏和可换背景。源码在 `packages/shorekeeper-theme`，包名 `@local/dsh-shorekeeper-startup`。主题页留了 `shorekeeper.theme.pet`，桌宠设置挂在这里。相对上游补回了 `shell.overlay` 挂载，避免桌面端开场只剩黑屏。
 
 人设材料来自 [SHOREKEEPER-AGENT](https://github.com/ArayaTouka1/SHOREKEEPER-AGENT)，没有整本照搬。文件名里带「越狱」的材料不会被读入。`{{char}}`、`{{user}}`、`{char}`、`{user}` 原样进入提示词，运行时不替换。
 
 Inworld key 和 DeepSeek key 只放在进程环境或本机 `~/.dsh/` 下，不写进仓库。
 
-推荐搭配的守岸人主题（线稿开屏 + 可换背景）用我们的 fork：[musnows/shorekeeper-theme](https://github.com/musnows/shorekeeper-theme)。相对上游补回了 `shell.overlay` 挂载，避免桌面端开场只剩黑屏；安装方式见该仓库 README / 安装教程。
+人设、语音和主题一次装齐，不需要再克隆别的仓库。
 
 ## 网页
 
@@ -20,7 +21,7 @@ npx --yes --registry https://registry.npmjs.org --package @deepseek-ai/dsh@0.2.2
   dsh web --patch "$PWD/cordis.yml" --port 18080 --no-open
 ```
 
-`cordis.yml` 会关掉 Harness 自带的编程助手开场（`includeHarnessIdentity: false`，`personaPrefix` 为空），并插入 `./plugin.mjs` 和 `./persona.mjs`。这两个文件再导出包里的实现。
+`cordis.yml` 会关掉 Harness 自带的编程助手开场（`includeHarnessIdentity: false`，`personaPrefix` 为空），并插入 `./plugin.mjs`、`./persona.mjs` 和 `./packages/shorekeeper-theme/index.js`。前两个文件再导出包里的实现。网页这条挂上主题的宿主入口；开场画面和主题页要靠下面的桌面 `file:` 安装，才会带上 `client.js`。
 
 可以用 tmux 保住进程，例如会话名 `dsh-shorekeeper`。重启会换掉地址里的 token，以终端里打印的地址为准。
 
@@ -30,7 +31,7 @@ npx --yes --registry https://registry.npmjs.org --package @deepseek-ai/dsh@0.2.2
 
 `~/.dsh/profiles/desktop/cordis.patch.yml`
 
-把系统提示词的 Harness 身份关掉，并插入两个中文 id。中文 id 和语言包里的 `meta.title` 一致，设置页卡片才不会露出 `file:///` 或英文包名：
+把系统提示词的 Harness 身份关掉，并插入人设、语音和主题。人设和语音用中文 id，和语言包里的 `meta.title` 一致，设置页卡片才不会露出 `file:///` 或英文包名。主题 id 保持 `shorekeeper-startup`。
 
 ```yaml
 - id: system-prompt
@@ -43,9 +44,11 @@ npx --yes --registry https://registry.npmjs.org --package @deepseek-ai/dsh@0.2.2
       name: '@dsh-local/shorekeeper-tts'
     - id: 守岸人模拟
       name: '@dsh-local/shorekeeper-persona'
+    - id: shorekeeper-startup
+      name: '@local/dsh-shorekeeper-startup'
 ```
 
-依赖写在 `~/.dsh/profiles/desktop/package.json`，用 `file:` 指到本仓库的两个包。pnpm 会把包复制进自己的内容寻址仓库，改源码不会自动进到已经启动的客户端。改完人设或语音后，在桌面 profile 目录里对改过的那个包执行 `pnpm remove` 再 `pnpm add file:...`，然后重启 DeepSeek Harness。不要在 git 仓库根目录执行 `pnpm add`。
+依赖写在 `~/.dsh/profiles/desktop/package.json`，用 `file:` 指到本仓库的三个包。pnpm 会把包复制进自己的内容寻址仓库，改源码不会自动进到已经启动的客户端。改完人设、语音或主题后，在桌面 profile 目录里对改过的那个包执行 `pnpm remove` 再 `pnpm add file:...`，然后重启 DeepSeek Harness。不要在 git 仓库根目录执行 `pnpm add`。
 
 ```sh
 cd ~/.dsh/profiles/desktop
@@ -53,6 +56,8 @@ pnpm remove @dsh-local/shorekeeper-tts
 pnpm add "file:/绝对路径/dsh-shorekeeper-tts/packages/shorekeeper-tts"
 pnpm remove @dsh-local/shorekeeper-persona
 pnpm add "file:/绝对路径/dsh-shorekeeper-tts/packages/shorekeeper-persona"
+pnpm remove @local/dsh-shorekeeper-startup
+pnpm add "file:/绝对路径/dsh-shorekeeper-tts/packages/shorekeeper-theme"
 ```
 
 Inworld key 给 Dock 启动的客户端用：`~/.dsh/.env` 里的 `INWORLD_API_KEY`，模式 `600`。值如果以 `==` 结尾，必须加引号。插件先读进程环境，再读这个文件。DeepSeek key 在 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`。

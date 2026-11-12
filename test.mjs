@@ -603,6 +603,20 @@ test('publishes a new session id only to the loopback hook', async () => {
   assert.equal(seen[0].cwd, '/tmp/project')
 })
 
+test('theme source ships in this repo at 0.0.1 with the pet slot', () => {
+  const manifest = JSON.parse(readFileSync(new URL('./packages/shorekeeper-theme/package.json', import.meta.url), 'utf8'))
+  assert.equal(manifest.name, '@local/dsh-shorekeeper-startup')
+  assert.equal(manifest.version, '0.0.1')
+  assert.equal(manifest.exports['./client'], './client.js')
+  const patch = readFileSync(new URL('./cordis.yml', import.meta.url), 'utf8')
+  assert.equal(patch.includes("'./packages/shorekeeper-theme/index.js'"), true)
+  for (const file of ['client.js', 'client.template.js']) {
+    const source = readFileSync(new URL(`./packages/shorekeeper-theme/${file}`, import.meta.url), 'utf8')
+    assert.equal(source.includes("renderSlot('shorekeeper.theme.pet')"), true)
+    assert.equal(source.includes("'shorekeeper.theme.pet': { kind: 'single', scope: 'root' }"), true)
+  }
+})
+
 test('reads the DeepSeek key the same way the LLM does', async () => {
   const { loadDeepseekApiKey } = await import('./packages/shorekeeper-tts/realtime-demo/search.mjs')
   const credentials = [

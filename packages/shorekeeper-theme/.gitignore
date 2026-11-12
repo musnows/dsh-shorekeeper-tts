@@ -1,0 +1,6 @@
+node_modules/
+assets/*
+!assets/README.md
+__pycache__/
+*.pyc
+.DS_Store

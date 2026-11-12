@@ -9,3 +9,5 @@
       name: './plugin.mjs'
     - id: shorekeeper-persona
       name: './persona.mjs'
+    - id: shorekeeper-startup
+      name: './packages/shorekeeper-theme/index.js'
