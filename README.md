@@ -65,7 +65,7 @@ Inworld key 给 Dock 启动的客户端用：`~/.dsh/.env` 里的 `INWORLD_API_K
 
 状态栏和插件页来自包里的 `client.js`。回复下方操作栏还有语音按钮：点击后停下当前播放，把该条回复的全部正文重新送去 TTS 并播一遍；关闭自动播报时也能用。网页用 `./plugin.mjs` 直接挂宿主时只合成语音，不带这套界面。桌面 profile 要重新 `pnpm add file:...` 并重启 DeepSeek Harness，浏览器模块才会换成新的。
 
-浮层分隔线下面是桌面宠物。打开后会在本机 `18766` 端口拉起实时语音，并弹出无边框的守岸人窗口。收音阈值和麦克风条只在宠物开着时出现。宠物说话走自己的播放，不吃上面的音量滑条。桌宠资源随 TTS 包一起分发（`packages/shorekeeper-tts/realtime-demo`）；第一次打开时会在本机安装依赖并编译 `ShorekeeperPet.app`（需要 macOS 与 Xcode Command Line Tools）。关掉开关会停掉窗口和这个端口；用窗口上的关闭按钮关掉后，下次退出 Harness 不会再自动打开。
+浮层分隔线下面是桌面宠物。打开后会在本机 `18766` 端口拉起实时语音，并弹出无边框的守岸人窗口。收音阈值和麦克风条只在宠物开着时出现。宠物说话走自己的播放，不吃上面的音量滑条。桌宠资源随 TTS 包一起分发（`packages/shorekeeper-tts/realtime-demo`）；第一次打开时会在本机安装依赖并编译 `ShorekeeperPet.app`（需要 macOS 与 Xcode Command Line Tools）。关掉开关会停掉窗口和这个端口；用窗口上的关闭按钮关掉后，下次退出 Harness 不会再自动打开。问到网上的事时，桌宠会调用 DeepSeek 的搜索接口 `POST /v1/tools/search`，密钥和对话模型相同：先读进程里的 `DEEPSEEK_API_KEY`，再读 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`，最后读 `~/.dsh/.env`。
 
 句子按顺序合成，也按顺序播放。下一句可以在上一句还在播的时候先去合成。打断有两个入口，都会停下当前播放并丢掉还没说的缓冲：
 

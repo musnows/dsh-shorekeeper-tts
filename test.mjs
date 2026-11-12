@@ -602,3 +602,102 @@ test('publishes a new session id only to the loopback hook', async () => {
   assert.deepEqual(seen.map(item => item.id), [id, 'session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'])
   assert.equal(seen[0].cwd, '/tmp/project')
 })
+
+test('reads the DeepSeek key the same way the LLM does', async () => {
+  const { loadDeepseekApiKey } = await import('./packages/shorekeeper-tts/realtime-demo/search.mjs')
+  const credentials = [
+    'version: 1',
+    'DEEPSEEK_API_KEY: not-this',
+    'refs:',
+    '  OTHER_KEY: other',
+    '  DEEPSEEK_API_KEY: "from-refs"',
+    'records:',
+    '  llm/deepseek: ignore',
+  ].join('\n')
+  const envFile = 'DEEPSEEK_API_KEY=from-dotenv\n'
+  const readFile = (path) => {
+    if (String(path).endsWith('.credentials.yaml')) return credentials
+    if (String(path).endsWith('.env')) return envFile
+    throw new Error('missing')
+  }
+  assert.equal(loadDeepseekApiKey({
+    env: { DEEPSEEK_API_KEY: 'from-env', DSH_HOME: '/tmp/dsh' },
+    readFile,
+  }), 'from-env')
+  assert.equal(loadDeepseekApiKey({
+    env: { DSH_HOME: '/tmp/dsh' },
+    readFile,
+  }), 'from-refs')
+  assert.equal(loadDeepseekApiKey({
+    env: { DSH_HOME: '/tmp/dsh' },
+    readFile: (path) => {
+      if (String(path).endsWith('.credentials.yaml')) return 'version: 1\nrefs:\n  DEEPSEEK_API_KEY:\n'
+      return envFile
+    },
+  }), 'from-dotenv')
+  assert.equal(loadDeepseekApiKey({
+    env: {},
+    readFile: () => { throw new Error('missing') },
+  }), '')
+})
+
+test('web_search calls the DeepSeek search API with the LLM token', async () => {
+  const { SEARCH_URL, webSearch } = await import('./packages/shorekeeper-tts/realtime-demo/search.mjs')
+  const server = readFileSync('./packages/shorekeeper-tts/realtime-demo/server.mjs', 'utf8')
+  assert.equal(server.includes("name: 'web_search'"), true)
+  assert.equal(server.includes('先调用 web_search'), true)
+  assert.equal(server.includes('https://api.deepseek.com'), false)
+
+  let request
+  const query = '守岸人'.repeat(80)
+  const output = await webSearch({
+    query,
+    question: '她现在的版本是什么',
+    apiKey: 'sk-test',
+    fetchImpl: async (url, init) => {
+      request = { url, init }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [{
+            title: '守岸人',
+            url: 'https://example.com/shorekeeper',
+            site_name: 'Example',
+            summary: '一句摘要。',
+            content: '整页正文不该出现在工具结果里。',
+          }],
+        }),
+      }
+    },
+  })
+
+  assert.equal(request.url, SEARCH_URL)
+  assert.equal(request.init.headers.Authorization, 'Bearer sk-test')
+  const body = JSON.parse(request.init.body)
+  assert.equal([...body.query].length, 128)
+  assert.equal(body.ori_question, '她现在的版本是什么')
+  assert.equal(body.count, 5)
+  assert.equal(output.includes('守岸人'), true)
+  assert.equal(output.includes('https://example.com/shorekeeper'), true)
+  assert.equal(output.includes('整页正文'), false)
+  assert.equal(output.includes('sk-test'), false)
+
+  assert.equal(await webSearch({ query: '   ', apiKey: 'sk-test', fetchImpl: async () => { throw new Error('no') } }), '没有搜索词。')
+  assert.equal(await webSearch({ query: '天气', apiKey: '', fetchImpl: async () => { throw new Error('no') } }), '没有 DeepSeek 的密钥，搜不了。')
+  assert.equal(await webSearch({
+    query: '天气',
+    apiKey: 'sk-test',
+    fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({}) }),
+  }), 'DeepSeek 密钥无效，搜不了。')
+  assert.equal(await webSearch({
+    query: '天气',
+    apiKey: 'sk-test',
+    fetchImpl: async () => { throw new Error('offline') },
+  }), '搜索没有连上。')
+  assert.equal(await webSearch({
+    query: '天气',
+    apiKey: 'sk-test',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ results: [] }) }),
+  }), '没有搜到。')
+})

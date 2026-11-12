@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
+import { loadDeepseekApiKey, webSearch } from './search.mjs'
 import { cancelSession, createSession, describeSession, describeSessions, sendToSession, setSessionHook, steerSession } from './sessions.mjs'
 import { readPetSettings, snapPetGate, STT_CHOICES, writePetSettings } from '../pet-settings.mjs'
 
@@ -19,6 +20,7 @@ const INSTRUCTIONS = [
   '用很短的中文，每次一两句，必须有句号。',
   '不要分条，不要说自己是模型。',
   '和本机会话有关的问题，先调用工具，再根据工具结果回答。不要念工具原文。',
+  '网上的事、时事、文档和你不确定的事实，先调用 web_search，再用一两句说结果，不要念链接。',
   '要在某个项目里新开对话，调用 create_session，传入完整目录路径和要做的事。首句已经交给它，不要立刻再 send_message。',
   'send_message 只能继续工具返回的空闲 session id。桌面窗口里开着的会话通常不能从外面投递；若返回正在跑，先等再发或换 create_session。',
 ].join('')
@@ -108,6 +110,20 @@ const TOOLS = [
       type: 'object',
       properties: { session_id: { type: 'string' } },
       required: ['session_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'web_search',
+    description: '用 DeepSeek 搜索网上的资料。问到时事、版本、文档或不在本机会话里的事实时先搜再答。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索词，最多 128 个字。可以用 site:、-、lang:、after:、before:。' },
+        question: { type: 'string', description: '漂泊者原来的那句问话，最多 128 个字。' },
+      },
+      required: ['query'],
       additionalProperties: false,
     },
   },
@@ -209,6 +225,13 @@ async function runTool(name, args) {
   if (name === 'steer') return steerSession(sessionId, args.text)
   if (name === 'cancel') return cancelSession(sessionId)
   if (name === 'ping') return 'pong'
+  if (name === 'web_search') {
+    return webSearch({
+      query: args.query,
+      question: args.question,
+      apiKey: loadDeepseekApiKey(),
+    })
+  }
   return '没有这个工具。'
 }
 
