@@ -14,6 +14,8 @@ const MODEL = 'inworld/models/deepseek-v4.1-flash'
 const savedPetSettings = readPetSettings()
 const DEFAULT_STT = STT_CHOICES[0].id
 const PORT = Number(process.env.PORT || 18765)
+/* Phone companion on a LAN must opt in. The desktop pet keeps loopback. */
+const HOST = process.env.SHOREKEEPER_HOST || '127.0.0.1'
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const INSTRUCTIONS = [
   '你是守岸人。漂泊者在跟你说话。',
@@ -533,6 +535,11 @@ function serve() {
       response.end(JSON.stringify({ model: sttModel, choices: STT_CHOICES }))
       return
     }
+    if (request.method === 'GET' && url.pathname === '/health') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: true, service: 'shorekeeper-realtime', voice: VOICE }))
+      return
+    }
     if (request.method === 'POST' && url.pathname === '/stt') {
       const chunks = []
       request.on('data', chunk => chunks.push(chunk))
@@ -612,6 +619,29 @@ function serve() {
         }
         return
       }
+      /* Phone companion types. The desktop pet only sends microphone audio. */
+      if (message.type === 'text' && typeof message.text === 'string') {
+        const text = message.text.trim()
+        if (!text) return
+        if (text.length > 2000) {
+          send({ type: 'error', message: '这句话太长了。' })
+          return
+        }
+        if (api.readyState !== WebSocket.OPEN) {
+          send({ type: 'error', message: '语音还没接上。' })
+          return
+        }
+        api.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text }],
+          },
+        }))
+        api.send(JSON.stringify({ type: 'response.create' }))
+        return
+      }
       if (api.readyState !== WebSocket.OPEN) return
       if (message.type === 'audio' && typeof message.pcm === 'string') {
         api.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: message.pcm }))
@@ -631,8 +661,9 @@ function serve() {
     send({ type: 'gate', value: inputGate })
   })
 
-  server.listen(PORT, '127.0.0.1', () => {
+  server.listen(PORT, HOST, () => {
     console.log(`http://127.0.0.1:${PORT}/`)
+    if (HOST !== '127.0.0.1') console.log(`listening on ${HOST}:${PORT}`)
   })
 }
 
