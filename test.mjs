@@ -692,15 +692,27 @@ test('web_search calls the DeepSeek search API with the LLM token', async () => 
     fetchImpl: async () => { called = true },
   })
   assert.equal(called, false)
-  assert.equal(tooLong, 'query is 240 characters, over the 128-character limit. Shorten query to 128 characters or fewer and call web_search again. Do not retry this same text.')
+  assert.equal(tooLong, 'query is 240 characters, over the 120-character limit. Shorten query to 120 characters or fewer and call web_search again. Do not retry this same text.')
+  const atLimit = 'a'.repeat(120)
+  const sent = await webSearch({
+    query: atLimit,
+    apiKey: 'sk-test',
+    fetchImpl: async (url, init) => {
+      request = { url, init }
+      return { ok: true, json: async () => ({ results: [] }) }
+    },
+  })
+  assert.equal(JSON.parse(request.init.body).query, atLimit)
+  assert.equal(sent, '没有搜到。')
   const longQuestion = await webSearch({
     query: '守岸人',
-    question: '问'.repeat(129),
+    question: '问'.repeat(121),
     apiKey: 'sk-test',
     fetchImpl: async () => { called = true },
   })
   assert.equal(called, false)
-  assert.match(longQuestion, /^question is 129 characters, over the 128-character limit\. Shorten question/)
+  assert.match(longQuestion, /^question is 121 characters, over the 120-character limit\. Shorten question/)
+  assert.equal(server.includes('maxLength: 120'), true)
   assert.equal(await webSearch({ query: '天气', apiKey: '', fetchImpl: async () => { throw new Error('no') } }), '没有 DeepSeek 的密钥，搜不了。')
   assert.equal(await webSearch({
     query: '天气',

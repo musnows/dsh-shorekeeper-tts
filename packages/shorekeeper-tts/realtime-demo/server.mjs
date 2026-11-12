@@ -120,8 +120,16 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-      query: { type: 'string', description: '搜索词，必须在 128 个字符以内。超长会失败，缩短后再调用。可以用 site:、-、lang:、after:、before:。' },
-      question: { type: 'string', description: '漂泊者原来的那句问话，必须在 128 个字符以内。超长会失败。' },
+        query: {
+          type: 'string',
+          maxLength: 120,
+          description: '搜索词，必须在 120 个字符以内。超长会失败，缩短后再调用。可以用 site:、-、lang:、after:、before:。',
+        },
+        question: {
+          type: 'string',
+          maxLength: 120,
+          description: '漂泊者原来的那句问话，必须在 120 个字符以内。超长会失败。',
+        },
       },
       required: ['query'],
       additionalProperties: false,

@@ -3,7 +3,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const SEARCH_URL = 'https://api.deepseek.com/v1/tools/search'
-export const QUERY_MAX = 128
+/** Search API allows 128. The tool stops at 120 so a full-length query stays off that edge. */
+export const QUERY_MAX = 120
 export const RESULT_COUNT = 5
 
 export function clipUnicode(text, max) {
